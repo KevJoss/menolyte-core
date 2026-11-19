@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 import shap
 import streamlit as st
 from lime.lime_tabular import LimeTabularExplainer
+from sklearn.metrics import fbeta_score, roc_auc_score
 
 warnings.filterwarnings("ignore")
 
@@ -148,6 +149,130 @@ def suggested_action(variable, value):
     if variable == "InternetService" and value == "Fiber optic":
         return "Check fiber service quality and price competitiveness for this customer."
     return None
+
+
+@st.cache_data(show_spinner=False)
+def explain_customer(customer_values):
+    """SHAP per original variable + LIME conditions. Cached so reruns (what-if, other tabs) don't recompute them."""
+    customer_row = pd.DataFrame([customer_values])[feature_columns]
+    transformed_customer = fitted_preprocessor.transform(customer_row)
+    transformed_shap_values = build_shap_explainer().shap_values(transformed_customer, nsamples=300, silent=True)[0]
+    shap_by_variable = pd.Series(transformed_shap_values, index=transformed_feature_names).groupby(transformed_to_original).sum()
+    lime_explanation = build_lime_explainer().explain_instance(
+        encode_for_lime(customer_row)[0], churn_probability_from_lime_rows, num_features=8, num_samples=1500, labels=(1,))
+    return shap_by_variable, lime_explanation.as_list(label=1)
+
+
+# Short form: only the most important variables are asked (SHAP ranking of the SVM, computed on training data).
+# TotalCharges is not asked: it is almost exactly tenure × MonthlyCharges, so it is computed.
+FIELD_RANKING = [variable for variable in app_results["importance_comparison"].sort_values("SHAP rank").index
+                 if variable != "TotalCharges"]
+FORM_FIELD_GROUPS = {"Account": ["Contract", "tenure", "MonthlyCharges", "PaymentMethod"],
+                     "Internet services": ["InternetService", "OnlineSecurity", "TechSupport"]}
+FORM_FIELDS = [variable for group_variables in FORM_FIELD_GROUPS.values() for variable in group_variables]
+assert set(FORM_FIELDS) == set(FIELD_RANKING[:len(FORM_FIELDS)]), "The form must ask the top-ranked variables"
+INTERNET_ADD_ONS = ["OnlineSecurity", "OnlineBackup", "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies"]
+typical_customer_values = {column: (app_results["features_train"][column].median() if column in numeric_features
+                                    else app_results["features_train"][column].mode()[0]) for column in feature_columns}
+
+
+def complete_customers(asked_rows, asked_fields):
+    """Fill the fields not asked with the typical training value, keep services consistent and compute TotalCharges."""
+    completed_rows = pd.DataFrame({column: asked_rows[column] if column in asked_fields else typical_customer_values[column]
+                                   for column in feature_columns}, index=asked_rows.index)
+    no_internet = completed_rows["InternetService"] == "No"
+    for add_on in INTERNET_ADD_ONS:
+        completed_rows[add_on] = np.where(no_internet, "No internet service",
+                                          completed_rows[add_on].replace("No internet service", "No"))
+    completed_rows["MultipleLines"] = np.where(completed_rows["PhoneService"] == "No", "No phone service",
+                                               completed_rows["MultipleLines"].replace("No phone service", "No"))
+    completed_rows["TotalCharges"] = completed_rows["tenure"] * completed_rows["MonthlyCharges"]
+    return completed_rows
+
+
+@st.cache_data(show_spinner="Measuring how many form fields the model needs...")
+def form_size_curve():
+    """Test-set scores when only the top-k ranked fields are asked (the rest filled in). The model is not retrained."""
+    test_predictions = app_results["test_predictions"]
+    test_customers = customer_data.loc[test_predictions["customer_index"].astype(int), feature_columns].reset_index(drop=True)
+    actual_churn = test_predictions["actual_churn"].to_numpy()
+    all_fields_decisions = final_pipeline.predict(test_customers)
+    curve_rows = []
+    for field_count in range(1, len(FIELD_RANKING) + 1):
+        completed_customers = complete_customers(test_customers, FIELD_RANKING[:field_count])
+        decisions = final_pipeline.predict(completed_customers)
+        curve_rows.append({"fields asked": field_count, "field added": FIELD_RANKING[field_count - 1],
+                           "F2": fbeta_score(actual_churn, decisions, beta=2),
+                           "ROC-AUC": roc_auc_score(actual_churn, final_pipeline.predict_proba(completed_customers)[:, 1]),
+                           "same decision as all fields": (decisions == all_fields_decisions).mean()})
+    return pd.DataFrame(curve_rows)
+
+
+AUTOMATIC_PAYMENT_METHODS = ["Bank transfer (automatic)", "Credit card (automatic)"]
+
+
+def actionable_single_changes(customer_values):
+    """Retention levers the ISP controls, one variable at a time: longer contract, add support/security, auto-pay."""
+    changes = []
+    contract_order = category_values["Contract"]
+    for longer_contract in contract_order[contract_order.index(customer_values["Contract"]) + 1:]:
+        changes.append(("Contract", longer_contract))
+    if customer_values["InternetService"] != "No":
+        changes += [(variable, "Yes") for variable in ["TechSupport", "OnlineSecurity"] if customer_values[variable] == "No"]
+    if customer_values["PaymentMethod"] not in AUTOMATIC_PAYMENT_METHODS:
+        changes += [("PaymentMethod", method) for method in AUTOMATIC_PAYMENT_METHODS]
+    return changes
+
+
+def churn_probabilities_for(customer_rows):
+    return final_pipeline.predict_proba(pd.DataFrame(customer_rows)[feature_columns])[:, 1]
+
+
+@st.fragment  # widgets inside rerun only this function: the prediction stays on screen and SHAP/LIME are not recomputed
+def show_what_if_panel(customer_values, current_probability):
+    st.markdown("#### What if…? Simulate a retention action")
+    monthly_fee = customer_values["MonthlyCharges"]
+    money_at_risk_now = current_probability * monthly_fee
+
+    candidate_changes = actionable_single_changes(customer_values)
+    if candidate_changes:
+        candidate_probabilities = churn_probabilities_for([{**customer_values, variable: new_value}
+                                                           for variable, new_value in candidate_changes])
+        best_index = int(np.argmin(candidate_probabilities))
+        best_variable, best_value = candidate_changes[best_index]
+        best_probability = candidate_probabilities[best_index]
+    if candidate_changes and best_probability < current_probability:
+        st.success(f"**Recommended action:** change *{PLAIN_LANGUAGE_LABELS[best_variable].lower()}* to **{best_value}**. "
+                   f"Churn risk {current_probability:.0%} → {best_probability:.0%}, "
+                   f"protects ~**${(current_probability - best_probability) * monthly_fee:,.2f}/month**.")
+    else:
+        st.info("No single actionable change lowers this customer's churn risk.")
+
+    has_internet = customer_values["InternetService"] != "No"
+    simulated_values = dict(customer_values)
+    widget_columns = st.columns(4)
+    for widget_column, variable in zip(widget_columns, ["Contract", "TechSupport", "OnlineSecurity", "PaymentMethod"]):
+        options = ["No", "Yes"] if variable in ["TechSupport", "OnlineSecurity"] and has_internet else category_values[variable]
+        simulated_values[variable] = widget_column.selectbox(
+            f"{PLAIN_LANGUAGE_LABELS[variable]} (simulated)", options, index=options.index(customer_values[variable]),
+            disabled=variable in ["TechSupport", "OnlineSecurity"] and not has_internet,
+            key=f"what_if_{variable}_{hash(tuple(customer_values.items()))}")  # new customer -> widgets reset
+
+    simulated_probability = churn_probabilities_for([simulated_values])[0]
+    current_segment, simulated_segment = risk_segment_of(current_probability), risk_segment_of(simulated_probability)
+    money_at_risk_change = (simulated_probability - current_probability) * monthly_fee
+    result_columns = st.columns(4)
+    result_columns[0].metric("Money at risk now", f"${money_at_risk_now:,.2f}/month",
+                             help="Churn probability × monthly fee")
+    result_columns[1].metric("Churn risk after change", f"{simulated_probability:.0%}",
+                             delta=f"{(simulated_probability - current_probability) * 100:+.0f} pts", delta_color="inverse")
+    result_columns[2].metric("Risk segment after change", simulated_segment,
+                             delta=f"was {current_segment}" if simulated_segment != current_segment else None, delta_color="off")
+    result_columns[3].metric("Money at risk after change", f"${simulated_probability * monthly_fee:,.2f}/month",
+                             delta=f"{'-' if money_at_risk_change < 0 else '+'}${abs(money_at_risk_change):,.2f}/month",
+                             delta_color="inverse")
+    st.caption("⚠️ This shows how the model's prediction changes, not a guarantee that the customer stays: the model "
+               "learned associations, not causes. The monthly fee is kept fixed. Validate each action with a control group.")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -296,6 +421,20 @@ with performance_tab:
                     x="normalized importance", y="variable", color="method", barmode="group", orientation="h", height=600)
     st.plotly_chart(figure, width="stretch")
 
+    st.markdown("#### How many form fields does the model really need?")
+    curve = form_size_curve()
+    chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
+    figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
+                     title="Test scores asking only the k most important fields (SHAP order)")
+    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR)
+    figure.update_layout(yaxis_title="Test score", legend_title="", xaxis_dtick=1)
+    st.plotly_chart(figure, width="stretch")
+    st.caption(f"Order: {', '.join(FIELD_RANKING)}. Fields not asked take the typical training value; total paid is "
+               f"computed as months × monthly fee. The app's form asks {len(FORM_FIELDS)} fields (dotted line): "
+               f"F2 {chosen_form['F2']:.3f} vs {metadata['test_metrics']['f2']:.3f} with all 19 fields, ROC-AUC "
+               f"{chosen_form['ROC-AUC']:.3f} vs {metadata['test_metrics']['roc_auc']:.3f}, and the same decision for "
+               f"{chosen_form['same decision as all fields']:.1%} of test customers. The model is not retrained.")
+
 # ----------------------------------------------------------------------------------------------------------------------
 # C. Prediction & Explainability
 # ----------------------------------------------------------------------------------------------------------------------
@@ -311,41 +450,41 @@ with prediction_tab:
     example_choice = st.selectbox("Start from", list(example_customers))
     example_index = example_customers[example_choice]
     if example_index is None:
-        default_values = {"gender": "Female", "SeniorCitizen": 0, "Partner": "No", "Dependents": "No", "tenure": 3,
-                          "PhoneService": "Yes", "MultipleLines": "No", "InternetService": "Fiber optic",
-                          "OnlineSecurity": "No", "OnlineBackup": "No", "DeviceProtection": "No", "TechSupport": "No",
-                          "StreamingTV": "Yes", "StreamingMovies": "No", "Contract": "Month-to-month",
-                          "PaperlessBilling": "Yes", "PaymentMethod": "Electronic check", "MonthlyCharges": 85.0,
-                          "TotalCharges": 255.0}
+        default_values = {"Contract": "Month-to-month", "tenure": 3, "MonthlyCharges": 85.0, "PaymentMethod": "Electronic check",
+                          "InternetService": "Fiber optic", "OnlineSecurity": "No", "TechSupport": "No"}
     else:
-        default_values = customer_data.loc[int(example_index), feature_columns].to_dict()
+        default_values = customer_data.loc[int(example_index), FORM_FIELDS].to_dict()
 
     with st.form("customer_form"):
         input_values = {}
-        form_columns = st.columns(3)
-        column_groups = {
-            "Profile": ["gender", "SeniorCitizen", "Partner", "Dependents"],
-            "Account": ["tenure", "Contract", "PaperlessBilling", "PaymentMethod", "MonthlyCharges", "TotalCharges"],
-            "Services": ["PhoneService", "MultipleLines", "InternetService", "OnlineSecurity", "OnlineBackup",
-                         "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies"],
-        }
-        for form_column, (group_title, group_variables) in zip(form_columns, column_groups.items()):
+        form_columns = st.columns(2)
+        for form_column, (group_title, group_variables) in zip(form_columns, FORM_FIELD_GROUPS.items()):
             form_column.markdown(f"**{group_title}**")
             for variable in group_variables:
                 widget_key = f"{example_choice}_{variable}"
                 label = PLAIN_LANGUAGE_LABELS[variable]
                 if variable == "tenure":
                     input_values[variable] = form_column.slider(label + " (months)", 0, 72, int(default_values[variable]), key=widget_key)
-                elif variable in ["MonthlyCharges", "TotalCharges"]:
+                elif variable == "MonthlyCharges":
                     input_values[variable] = form_column.number_input(label + " (USD)", 0.0, 10000.0,
                                                                       float(default_values[variable]), key=widget_key)
                 else:
-                    options = category_values[variable]
-                    input_values[variable] = form_column.selectbox(label, options, index=options.index(default_values[variable]),
+                    options = ["No", "Yes"] if variable in INTERNET_ADD_ONS else category_values[variable]
+                    default_value = "No" if default_values[variable] == "No internet service" else default_values[variable]
+                    input_values[variable] = form_column.selectbox(label, options, index=options.index(default_value),
                                                                    key=widget_key)
+        st.caption(f"Only the {len(FORM_FIELDS)} fields that matter most to the model (see Model Performance). The rest take "
+                   "the typical customer's value; total paid = months × monthly fee. Online security and technical "
+                   "support are ignored for customers without internet.")
         submitted = st.form_submit_button("Predict churn risk", type="primary")
 
+    # Keep the scored customer across reruns (what-if widgets, other tabs), one per "Start from" option
     if submitted:
+        st.session_state[f"scored_customer_{example_choice}"] = complete_customers(pd.DataFrame([input_values]),
+                                                                                   FORM_FIELDS).to_dict("records")[0]
+    scored_customer = st.session_state.get(f"scored_customer_{example_choice}")
+    if scored_customer is not None:
+        input_values = scored_customer
         customer_row = pd.DataFrame([input_values])[feature_columns]
         churn_probability = final_pipeline.predict_proba(customer_row)[0, 1]
         predicted_churn = final_pipeline.predict(customer_row)[0]
@@ -358,12 +497,7 @@ with prediction_tab:
         st.progress(float(churn_probability))
 
         with st.spinner("Explaining the prediction with SHAP and LIME..."):
-            transformed_customer = fitted_preprocessor.transform(customer_row)
-            transformed_shap_values = build_shap_explainer().shap_values(transformed_customer, nsamples=300, silent=True)[0]
-            shap_by_variable = (pd.Series(transformed_shap_values, index=transformed_feature_names)
-                                .groupby(transformed_to_original).sum())
-            lime_explanation = build_lime_explainer().explain_instance(
-                encode_for_lime(customer_row)[0], churn_probability_from_lime_rows, num_features=8, num_samples=1500, labels=(1,))
+            shap_by_variable, lime_conditions = explain_customer(input_values)
 
         top_drivers = shap_by_variable.reindex(shap_by_variable.abs().sort_values(ascending=False).index).head(8)
 
@@ -382,7 +516,7 @@ with prediction_tab:
             figure.update_layout(xaxis_title="Points of churn risk", yaxis_title="", legend_title="")
             st.plotly_chart(figure, width="stretch")
         with explanation_columns[1]:
-            lime_weights = pd.DataFrame(lime_explanation.as_list(label=1), columns=["condition", "weight"]).iloc[::-1]
+            lime_weights = pd.DataFrame(lime_conditions, columns=["condition", "weight"]).iloc[::-1]
             figure = px.bar(lime_weights, x="weight", y="condition", orientation="h", text_auto=".2f",
                             color=np.where(lime_weights["weight"] > 0, "Raises risk", "Lowers risk"),
                             color_discrete_map={"Raises risk": HIGHLIGHT_COLOR, "Lowers risk": RETENTION_COLOR},
@@ -407,6 +541,8 @@ with prediction_tab:
                 st.markdown(f"- {action}")
         st.caption("Explanations show what the model associates with churn, not proven causes. "
                    "Suggested actions are hypotheses to validate with a controlled test (contacted vs control group).")
+
+        show_what_if_panel(input_values, churn_probability)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # D. Business Application

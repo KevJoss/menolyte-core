@@ -18,6 +18,17 @@ for example_option in start_from.options:
     assert not app_test.exception, f"Exception after predicting '{example_option}': {app_test.exception}"
     shown_metrics = {metric.label: metric.value for metric in app_test.metric}
     print(f"{example_option}: churn probability {shown_metrics.get('Churn probability')} | {shown_metrics.get('Risk segment')}")
+
+    # What-if panel: simulate a two-year contract (reruns only the fragment; the prediction must stay on screen)
+    next(selectbox for selectbox in app_test.selectbox if selectbox.label == "Contract type (simulated)").set_value("Two year").run()
+    assert not app_test.exception, f"Exception in what-if for '{example_option}': {app_test.exception}"
+    shown_metrics = {metric.label: metric.value for metric in app_test.metric}
+    money_now, money_after = (float(shown_metrics[label].strip("$/month").replace(",", ""))
+                              for label in ["Money at risk now", "Money at risk after change"])
+    print(f"  what-if two-year contract: risk {shown_metrics['Churn risk after change']} | "
+          f"money at risk ${money_now:,.2f} -> ${money_after:,.2f}/month")
+    if example_option == "Example: highest-risk test customer":
+        assert money_after < money_now, "A two-year contract should lower the money at risk of the riskiest customer"
     start_from = next(selectbox for selectbox in app_test.selectbox if selectbox.label == "Start from")
 
 print("SMOKE TEST PASSED")
