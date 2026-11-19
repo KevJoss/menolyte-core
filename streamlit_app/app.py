@@ -337,15 +337,16 @@ with home_tab:
 # A. Exploratory Data Analysis
 # ----------------------------------------------------------------------------------------------------------------------
 with eda_tab:
-    st.subheader("Explore the customer base")
+    st.subheader("¿Quiénes se van? Conoce tu base de clientes")
+    st.caption("Filtra un grupo de clientes y compara su tasa de abandono con la de toda la base.")
     filter_columns = st.columns(4)
-    selected_contracts = filter_columns[0].multiselect("Contract", category_values["Contract"], default=category_values["Contract"])
-    selected_internet = filter_columns[1].multiselect("Internet service", category_values["InternetService"],
+    selected_contracts = filter_columns[0].multiselect("Contrato", category_values["Contract"], default=category_values["Contract"])
+    selected_internet = filter_columns[1].multiselect("Servicio de internet", category_values["InternetService"],
                                                       default=category_values["InternetService"])
-    selected_payment = filter_columns[2].multiselect("Payment method", category_values["PaymentMethod"],
+    selected_payment = filter_columns[2].multiselect("Método de pago", category_values["PaymentMethod"],
                                                      default=category_values["PaymentMethod"])
     minimum_tenure, maximum_tenure = int(customer_data["tenure"].min()), int(customer_data["tenure"].max())
-    selected_tenure = filter_columns[3].slider("Months as a customer", minimum_tenure, maximum_tenure,
+    selected_tenure = filter_columns[3].slider("Meses como cliente", minimum_tenure, maximum_tenure,
                                                (minimum_tenure, maximum_tenure))
 
     segment_data = customer_data[customer_data["Contract"].isin(selected_contracts)
@@ -354,68 +355,88 @@ with eda_tab:
                                  & customer_data["tenure"].between(*selected_tenure)]
 
     if segment_data.empty:
-        st.warning("No customers match these filters.")
+        st.warning("Ningún cliente cumple estos filtros.")
     else:
         overall_churn_rate = customer_data["churned"].mean()
         segment_churn_rate = segment_data["churned"].mean()
         kpi_columns = st.columns(4)
-        kpi_columns[0].metric("Customers in segment", f"{len(segment_data):,}")
-        kpi_columns[1].metric("Churn rate", f"{segment_churn_rate:.1%}",
-                              delta=f"{(segment_churn_rate - overall_churn_rate) * 100:+.1f} pts vs all customers",
+        kpi_columns[0].metric("Clientes en el grupo", f"{len(segment_data):,}")
+        kpi_columns[1].metric("Tasa de abandono", f"{segment_churn_rate:.1%}",
+                              delta=f"{(segment_churn_rate - overall_churn_rate) * 100:+.1f} pts vs. toda la base",
                               delta_color="inverse")
-        kpi_columns[2].metric("Average monthly fee", f"${segment_data['MonthlyCharges'].mean():,.2f}")
-        kpi_columns[3].metric("Monthly revenue lost to churn",
+        kpi_columns[2].metric("Cuota mensual promedio", f"${segment_data['MonthlyCharges'].mean():,.2f}")
+        kpi_columns[3].metric("Ingreso mensual perdido por abandono",
                               f"${segment_data.loc[segment_data['churned'] == 1, 'MonthlyCharges'].sum():,.0f}")
 
+        stay_leave_names = {"No": "Se queda", "Yes": "Se va"}
         chart_columns = st.columns(2)
         with chart_columns[0]:
-            breakdown_variable = st.selectbox("Churn rate by", categorical_features,
-                                              index=categorical_features.index("Contract"))
+            breakdown_variable = st.selectbox("Ver la tasa de abandono por", categorical_features,
+                                              index=categorical_features.index("Contract"),
+                                              format_func=lambda variable: PLAIN_LANGUAGE_LABELS.get(variable, variable))
+            breakdown_name = PLAIN_LANGUAGE_LABELS.get(breakdown_variable, breakdown_variable)
             churn_by_category = (segment_data.groupby(breakdown_variable)["churned"].agg(["mean", "size"])
                                  .reset_index().rename(columns={"mean": "churn_rate", "size": "customers"}))
             churn_by_category[breakdown_variable] = churn_by_category[breakdown_variable].astype(str)
+            # Color only: red = above the whole base's churn rate, grey = below (one message: where to look)
             figure = px.bar(churn_by_category, x=breakdown_variable, y="churn_rate", text_auto=".0%",
-                            hover_data=["customers"], color_discrete_sequence=[RETENTION_COLOR])
-            figure.add_hline(y=overall_churn_rate, line_dash="dash", line_color=HIGHLIGHT_COLOR,
-                             annotation_text="All customers")
-            figure.update_layout(yaxis_tickformat=".0%", yaxis_title="Churn rate", title=f"Churn rate by {breakdown_variable}")
+                            hover_data=["customers"],
+                            color=np.where(churn_by_category["churn_rate"] > overall_churn_rate, "above", "below"),
+                            color_discrete_map={"above": HIGHLIGHT_COLOR, "below": NEUTRAL_COLOR},
+                            labels={"churn_rate": "Tasa de abandono", "customers": "Clientes"})
+            figure.add_hline(y=overall_churn_rate, line_dash="dash", line_color="#2d2d2d",
+                             annotation_text="Promedio de toda la base", annotation_position="top left")
+            figure.update_layout(yaxis_tickformat=".0%", yaxis_title="Tasa de abandono", xaxis_title="",
+                                 showlegend=False, title=f"Tasa de abandono por {breakdown_name.lower()}")
             st.plotly_chart(figure, width="stretch", theme=None)
         with chart_columns[1]:
             figure = px.histogram(segment_data, x="tenure", color="Churn", barmode="overlay", histnorm="percent", nbins=36,
                                   color_discrete_map={"Yes": HIGHLIGHT_COLOR, "No": NEUTRAL_COLOR},
-                                  title="Months as a customer: who stays vs who leaves")
-            figure.update_layout(xaxis_title="Months as a customer", yaxis_title="% of group")
+                                  title="Antigüedad: quién se queda y quién se va")
+            figure.for_each_trace(lambda trace: trace.update(name=stay_leave_names[trace.name]))
+            figure.update_layout(xaxis_title="Meses como cliente", yaxis_title="% del grupo", legend_title="")
             st.plotly_chart(figure, width="stretch", theme=None)
 
         figure = px.box(segment_data, x="Churn", y="MonthlyCharges", color="Churn",
                         color_discrete_map={"Yes": HIGHLIGHT_COLOR, "No": NEUTRAL_COLOR},
-                        title="Monthly fee of customers who stay vs leave")
-        figure.update_layout(yaxis_title="Monthly fee (USD)", showlegend=False)
+                        title="Cuota mensual de quienes se quedan vs. quienes se van")
+        figure.update_xaxes(tickvals=list(stay_leave_names), ticktext=list(stay_leave_names.values()), title="")
+        figure.update_layout(yaxis_title="Cuota mensual (USD)", showlegend=False)
         st.plotly_chart(figure, width="stretch", theme=None)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # B. Model Performance
 # ----------------------------------------------------------------------------------------------------------------------
 with performance_tab:
-    st.subheader("Final model: SVM (RBF kernel) tuned with Grid Search")
+    st.subheader("¿Qué tan bueno es el modelo?")
     hyperparameters = metadata["hyperparameters"]
-    st.caption(f"C = {hyperparameters['C']:.3f}, gamma = {hyperparameters['gamma']:.4f}, class_weight = balanced. "
-               "Primary metric: F2 (recall weighs twice as much as precision, because missing a churner is the costliest error).")
+    st.caption("Medido en 1,409 clientes que el modelo nunca vio. Métrica principal: **F2**, que da el doble de peso a "
+               "*detectar* a quien se va (recall) que a no equivocarse al marcarlo (precisión), porque no detectar a un "
+               "cliente que se va es el error más caro.")
 
+    metric_display = {
+        "f2": ("F2 · métrica principal", "Combina recall y precisión, dando el doble de peso al recall."),
+        "recall": ("Recall · detectados", "De los clientes que se fueron, qué parte detectó el modelo."),
+        "precision": ("Precisión · aciertos", "De los clientes marcados como 'se va', qué parte se fue de verdad."),
+        "f1": ("F1 · balance", "Combina recall y precisión con el mismo peso."),
+        "roc_auc": ("ROC-AUC · orden", "Qué tan bien ordena a los clientes por riesgo (1 = perfecto, 0.5 = al azar)."),
+    }
     metric_columns = st.columns(5)
     for column, metric_name in zip(metric_columns, ["f2", "recall", "precision", "f1", "roc_auc"]):
         test_value = metadata["test_metrics"][metric_name]
         cross_validation_value = metadata["cross_validation_metrics"][metric_name]
-        column.metric(f"{metric_name.upper()} (test)", f"{test_value:.3f}",
-                      delta=f"{test_value - cross_validation_value:+.3f} vs cross-validation")
+        metric_label, metric_help = metric_display[metric_name]
+        column.metric(metric_label, f"{test_value:.3f}",
+                      delta=f"{test_value - cross_validation_value:+.3f} vs. validación cruzada", help=metric_help)
 
     chart_columns = st.columns(2)
     with chart_columns[0]:
         confusion_matrix = app_results["test_confusion_matrix"].to_numpy()
         figure = px.imshow(confusion_matrix, text_auto=True, color_continuous_scale=["#ffffff", NEUTRAL_COLOR],
-                           x=["Predicted: stays", "Predicted: churns"], y=["Actual: stays", "Actual: churns"],
-                           title="Confusion matrix on the test set (1,409 unseen customers)")
+                           x=["Predijo: se queda", "Predijo: se va"], y=["En realidad: se quedó", "En realidad: se fue"],
+                           title="Aciertos y errores en 1,409 clientes nuevos")
         figure.update_layout(coloraxis_showscale=False)
+        figure.update_traces(textfont_size=20)
         st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         model_comparison = app_results["model_comparison_cv"]
@@ -425,68 +446,82 @@ with performance_tab:
         figure = px.bar(metric_means, x="metric", y="score", color="model", barmode="group",
                         color_discrete_map={"SVM (RBF)": HIGHLIGHT_COLOR, "Random Forest": NEUTRAL_COLOR,
                                             "Logistic Regression": "#6b7280"},
-                        title="Model comparison (5-fold cross-validation, default hyperparameters)")
-        figure.update_layout(yaxis_range=[0, 1])
+                        title="El SVM elegido frente a otros modelos")
+        figure.update_layout(yaxis_range=[0, 1], xaxis_title="", yaxis_title="Puntaje (validación cruzada)", legend_title="")
         st.plotly_chart(figure, width="stretch", theme=None)
 
-    st.markdown("#### Hyperparameter optimization (same model, folds and budget of 36 configurations)")
-    strategies = app_results["optimization_strategies"].reset_index(names="strategy")
-    st.dataframe(strategies[["strategy", "configurations_evaluated", "optimization_seconds", "best_C", "best_gamma",
-                             "cv_f2", "cv_recall", "cv_precision", "f2_gain_vs_default_svm"]].round(4),
-                 hide_index=True, width="stretch")
-    chart_columns = st.columns(2)
-    with chart_columns[0]:
-        figure = px.bar(strategies, x="strategy", y="cv_f2", text_auto=".4f", title="Best cross-validated F2",
-                        color_discrete_sequence=[RETENTION_COLOR])
-        figure.update_layout(yaxis_range=[strategies["cv_f2"].min() - 0.02, strategies["cv_f2"].max() + 0.01])
-        st.plotly_chart(figure, width="stretch", theme=None)
-    with chart_columns[1]:
-        figure = px.bar(strategies, x="strategy", y="optimization_seconds", text_auto=".1f",
-                        title="Optimization time (seconds)", color_discrete_sequence=[NEUTRAL_COLOR])
-        st.plotly_chart(figure, width="stretch", theme=None)
-
-    st.markdown("#### Multi-objective optimization (NSGA-II): F2 vs inference time")
-    nsga2_trials = app_results["nsga2_trials"]
-    pareto_front = nsga2_trials[nsga2_trials["is_pareto_optimal"]].sort_values("ms_per_1000_customers")
-    grid_best = app_results["grid_best_speed"]
-    figure = go.Figure()
-    figure.add_trace(go.Scatter(x=nsga2_trials.loc[~nsga2_trials["is_pareto_optimal"], "ms_per_1000_customers"],
-                                y=nsga2_trials.loc[~nsga2_trials["is_pareto_optimal"], "cv_f2"], mode="markers",
-                                marker={"color": "lightgray", "size": 9}, name="Dominated configurations"))
-    figure.add_trace(go.Scatter(x=pareto_front["ms_per_1000_customers"], y=pareto_front["cv_f2"], mode="lines+markers",
-                                marker={"color": HIGHLIGHT_COLOR, "size": 11}, line={"color": HIGHLIGHT_COLOR},
-                                name="Pareto front", customdata=pareto_front[["C", "gamma"]],
-                                hovertemplate="F2 %{y:.4f}<br>%{x:.0f} ms<br>C %{customdata[0]:.3f}, gamma %{customdata[1]:.4f}"))
-    figure.add_trace(go.Scatter(x=[grid_best["ms_per_1000_customers"]], y=[grid_best["cv_f2"]], mode="markers",
-                                marker={"symbol": "star", "size": 22, "color": RETENTION_COLOR, "line": {"color": "black", "width": 1}},
-                                name="Selected model (Grid Search winner)"))
-    figure.update_layout(xaxis_title="Inference time (ms per 1,000 customers) — lower is better",
-                         yaxis_title="Cross-validated F2 — higher is better", height=450)
-    st.plotly_chart(figure, width="stretch", theme=None)
-    st.caption("The selected model is not dominated: it sits at the high-F2 end of the front. The faster 'knee' "
-               "solutions save a few hundredths of a millisecond per customer, irrelevant at this scale.")
-
-    st.markdown("#### What drives the predictions: SHAP (selected SVM) vs Random Forest importance")
-    importance = app_results["importance_comparison"][["SHAP (SVM)", "Random Forest MDI"]].iloc[::-1].reset_index(names="variable")
-    figure = px.bar(importance.melt(id_vars="variable", var_name="method", value_name="normalized importance"),
-                    x="normalized importance", y="variable", color="method", barmode="group", orientation="h", height=600,
-                    color_discrete_map={"SHAP (SVM)": HIGHLIGHT_COLOR, "Random Forest MDI": NEUTRAL_COLOR})
-    st.plotly_chart(figure, width="stretch", theme=None)
-
-    st.markdown("#### How many form fields does the model really need?")
+    st.markdown("#### ¿Cuántos datos hay que pedir por cliente?")
     curve = form_size_curve()
     chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
     figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
                      color_discrete_map={"F2": "#2d2d2d", "ROC-AUC": NEUTRAL_COLOR},
-                     title="Test scores asking only the k most important fields (SHAP order)")
-    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR)
-    figure.update_layout(yaxis_title="Test score", legend_title="", xaxis_dtick=1)
+                     title=f"Con {len(FORM_FIELDS)} datos el modelo rinde casi igual que con los 19")
+    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR,
+                     annotation_text="Formulario de la app", annotation_position="bottom right")
+    figure.update_layout(xaxis_title="Datos pedidos (los más importantes primero)", yaxis_title="Puntaje en prueba",
+                         legend_title="", xaxis_dtick=1)
     st.plotly_chart(figure, width="stretch", theme=None)
-    st.caption(f"Order: {', '.join(FIELD_RANKING)}. Fields not asked take the typical training value; total paid is "
-               f"computed as months × monthly fee. The app's form asks {len(FORM_FIELDS)} fields (dotted line): "
-               f"F2 {chosen_form['F2']:.3f} vs {metadata['test_metrics']['f2']:.3f} with all 19 fields, ROC-AUC "
-               f"{chosen_form['ROC-AUC']:.3f} vs {metadata['test_metrics']['roc_auc']:.3f}, and the same decision for "
-               f"{chosen_form['same decision as all fields']:.1%} of test customers. The model is not retrained.")
+    st.caption(f"Orden: {', '.join(FIELD_RANKING)}. Los datos no pedidos toman el valor típico del entrenamiento; el total "
+               f"pagado se calcula como meses × cuota mensual. El formulario de la app pide {len(FORM_FIELDS)} datos "
+               f"(línea punteada): F2 {chosen_form['F2']:.3f} vs. {metadata['test_metrics']['f2']:.3f} con los 19, ROC-AUC "
+               f"{chosen_form['ROC-AUC']:.3f} vs. {metadata['test_metrics']['roc_auc']:.3f}, y la misma decisión para el "
+               f"{chosen_form['same decision as all fields']:.1%} de los clientes de prueba. El modelo no se reentrena.")
+
+    with st.expander("🔧 Detalles técnicos: optimización e importancia de variables"):
+        st.caption(f"Modelo final: SVM (kernel RBF) ajustado con Grid Search. C = {hyperparameters['C']:.3f}, "
+                   f"gamma = {hyperparameters['gamma']:.4f}, class_weight = balanced.")
+
+        st.markdown("#### Optimización de hiperparámetros (mismo modelo, particiones y presupuesto de 36 configuraciones)")
+        strategies = app_results["optimization_strategies"].reset_index(names="strategy")
+        st.dataframe(strategies[["strategy", "configurations_evaluated", "optimization_seconds", "best_C", "best_gamma",
+                                 "cv_f2", "cv_recall", "cv_precision", "f2_gain_vs_default_svm"]].round(4)
+                     .rename(columns={"strategy": "estrategia", "configurations_evaluated": "configuraciones",
+                                      "optimization_seconds": "segundos", "best_C": "mejor C", "best_gamma": "mejor gamma",
+                                      "cv_f2": "F2 (VC)", "cv_recall": "recall (VC)", "cv_precision": "precisión (VC)",
+                                      "f2_gain_vs_default_svm": "ganancia F2 vs. SVM base"}),
+                     hide_index=True, width="stretch")
+        chart_columns = st.columns(2)
+        with chart_columns[0]:
+            figure = px.bar(strategies, x="strategy", y="cv_f2", text_auto=".4f", title="Mejor F2 en validación cruzada",
+                            color="strategy", color_discrete_map={"Grid Search": HIGHLIGHT_COLOR},
+                            color_discrete_sequence=[NEUTRAL_COLOR])
+            figure.update_layout(yaxis_range=[strategies["cv_f2"].min() - 0.02, strategies["cv_f2"].max() + 0.01],
+                                 xaxis_title="", yaxis_title="F2", showlegend=False)
+            st.plotly_chart(figure, width="stretch", theme=None)
+        with chart_columns[1]:
+            figure = px.bar(strategies, x="strategy", y="optimization_seconds", text_auto=".1f",
+                            title="Tiempo de optimización (segundos)", color_discrete_sequence=[NEUTRAL_COLOR])
+            figure.update_layout(xaxis_title="", yaxis_title="Segundos")
+            st.plotly_chart(figure, width="stretch", theme=None)
+
+        st.markdown("#### Optimización multiobjetivo (NSGA-II): F2 vs. tiempo de inferencia")
+        nsga2_trials = app_results["nsga2_trials"]
+        pareto_front = nsga2_trials[nsga2_trials["is_pareto_optimal"]].sort_values("ms_per_1000_customers")
+        grid_best = app_results["grid_best_speed"]
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=nsga2_trials.loc[~nsga2_trials["is_pareto_optimal"], "ms_per_1000_customers"],
+                                    y=nsga2_trials.loc[~nsga2_trials["is_pareto_optimal"], "cv_f2"], mode="markers",
+                                    marker={"color": "#dfe3e8", "size": 9}, name="Configuraciones dominadas"))
+        figure.add_trace(go.Scatter(x=pareto_front["ms_per_1000_customers"], y=pareto_front["cv_f2"], mode="lines+markers",
+                                    marker={"color": HIGHLIGHT_COLOR, "size": 11}, line={"color": HIGHLIGHT_COLOR},
+                                    name="Frente de Pareto", customdata=pareto_front[["C", "gamma"]],
+                                    hovertemplate="F2 %{y:.4f}<br>%{x:.0f} ms<br>C %{customdata[0]:.3f}, gamma %{customdata[1]:.4f}"))
+        figure.add_trace(go.Scatter(x=[grid_best["ms_per_1000_customers"]], y=[grid_best["cv_f2"]], mode="markers",
+                                    marker={"symbol": "star", "size": 22, "color": "#2d2d2d", "line": {"color": "#ffffff", "width": 1.5}},
+                                    name="Modelo elegido (ganador de Grid Search)"))
+        figure.update_layout(xaxis_title="Tiempo de inferencia (ms por 1,000 clientes): menos es mejor",
+                             yaxis_title="F2 en validación cruzada: más es mejor", height=450)
+        st.plotly_chart(figure, width="stretch", theme=None)
+        st.caption("El modelo elegido no está dominado: está en el extremo de mayor F2 del frente. Las soluciones más "
+                   "rápidas del 'codo' ahorran unas centésimas de milisegundo por cliente, irrelevante a esta escala.")
+
+        st.markdown("#### Qué variables pesan más: SHAP (SVM elegido) vs. importancia de Random Forest")
+        importance = app_results["importance_comparison"][["SHAP (SVM)", "Random Forest MDI"]].iloc[::-1].reset_index(names="variable")
+        figure = px.bar(importance.melt(id_vars="variable", var_name="method", value_name="normalized importance"),
+                        x="normalized importance", y="variable", color="method", barmode="group", orientation="h", height=600,
+                        color_discrete_map={"SHAP (SVM)": HIGHLIGHT_COLOR, "Random Forest MDI": NEUTRAL_COLOR})
+        figure.update_layout(xaxis_title="Importancia normalizada", yaxis_title="", legend_title="")
+        st.plotly_chart(figure, width="stretch", theme=None)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # C. Prediction & Explainability
