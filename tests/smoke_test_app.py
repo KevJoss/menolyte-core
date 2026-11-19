@@ -2,7 +2,6 @@
 
 Run from the repository root:  python tests/smoke_test_app.py
 """
-import json
 import re
 from pathlib import Path
 
@@ -18,9 +17,9 @@ for example_option in start_from.options:
     start_from.set_value(example_option).run()
     next(button for button in app_test.button if button.label == "Predecir riesgo de abandono").click().run()
     assert not app_test.exception, f"Exception after predicting '{example_option}': {app_test.exception}"
-    # Result card: probability from the gauge, segment from the badge
-    gauge = next(json.loads(chart.proto.spec) for chart in app_test.get("plotly_chart") if '"indicator"' in chart.proto.spec)
-    churn_probability = gauge["data"][0]["value"] / 100
+    # Result card: probability from the risk scale, segment from the badge
+    churn_probability = next(float(re.search(r'data-probability="([\d.]+)"', block.value).group(1))
+                             for block in app_test.markdown if 'class="mn-scale"' in block.value)
     segment = next(re.search(r'mn-badge-\d">([^<]+)<', block.value).group(1) for block in app_test.markdown if 'class="mn-badge ' in block.value)
     assert 0 <= churn_probability <= 1, f"Gauge value out of range: {churn_probability}"
     print(f"{example_option}: churn probability {churn_probability:.0%} | {segment}")

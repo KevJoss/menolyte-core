@@ -125,7 +125,21 @@ span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
 .st-key-prediction_card_0 {{ border-top: 6px solid {NEUTRAL_GREY} !important; }}
 .st-key-prediction_card_1 {{ border-top: 6px solid #f19c9c !important; }}
 .st-key-prediction_card_2 {{ border-top: 6px solid {BRAND_RED} !important; }}
-[class*="st-key-prediction_card_"] [data-testid="stPlotlyChart"] {{ border: none; padding: 0; }}
+/* Risk scale (prediction card) */
+.mn-scale {{ padding: 1.2rem 0.5rem 0.8rem 0.25rem; }}
+.mn-scale-value {{ font-size: 4.2rem; font-weight: 800; line-height: 1; letter-spacing: -0.04em; }}
+.mn-scale-caption {{ font-size: 0.85rem; font-weight: 600; color: {MID_GREY}; text-transform: uppercase;
+                     letter-spacing: 0.04em; margin: 0.4rem 0 1.4rem 0; }}
+.mn-scale-track {{ position: relative; display: flex; height: 16px; border-radius: 999px; overflow: visible; gap: 3px; }}
+.mn-scale-zone {{ height: 100%; border-radius: 999px; }}
+.mn-scale-marker {{
+    position: absolute; top: -9px; width: 6px; height: 34px; margin-left: -3px; border-radius: 3px;
+    background: {TEXT_DARK}; box-shadow: 0 0 0 3px #ffffff;
+}}
+.mn-scale-labels {{ display: flex; gap: 3px; margin-top: 0.7rem; }}
+.mn-scale-label {{ font-size: 0.9rem; color: #9aa1ad; font-weight: 600; }}
+.mn-scale-label span {{ display: block; font-size: 0.78rem; font-weight: 400; }}
+.mn-scale-label-active {{ color: {TEXT_DARK}; font-weight: 800; }}
 .mn-badge {{ display: inline-block; padding: 0.3rem 0.9rem; border-radius: 999px; font-weight: 700; font-size: 1rem; }}
 .mn-badge-0 {{ background: #eef0f3; color: {TEXT_DARK}; }}
 .mn-badge-1 {{ background: #fbe3e3; color: #8c1c1d; }}
@@ -191,22 +205,28 @@ def action_card(number, action, reason):
             f'<div class="mn-action-text">{action}</div><div class="mn-action-reason">{reason}</div></div></div>')
 
 
-def risk_gauge(probability, segment_edges, level):
-    """Gauge 0–100% with the risk segments as background bands; the bar takes the segment color."""
-    bar_color = [NEUTRAL_GREY, "#f19c9c", BRAND_RED][level]
-    edges = [edge * 100 for edge in segment_edges]
-    figure = go.Figure(go.Indicator(
-        mode="gauge+number", value=probability * 100,
-        number={"suffix": "%", "font": {"size": 56, "color": TEXT_DARK}, "valueformat": ".0f"},
-        title={"text": "Probabilidad de abandono", "font": {"size": 15, "color": MID_GREY}},
-        gauge={"axis": {"range": [0, 100], "tickvals": edges, "ticktext": [f"{edge:.0f}%" for edge in edges],
-                        "tickfont": {"size": 12, "color": MID_GREY}},
-               "bar": {"color": bar_color, "thickness": 0.35}, "bgcolor": "#ffffff", "borderwidth": 0,
-               "steps": [{"range": [edges[0], edges[1]], "color": "#f3f4f6"},
-                         {"range": [edges[1], edges[2]], "color": "#fdf0f0"},
-                         {"range": [edges[2], edges[3]], "color": "#fbe3e3"}]}))
-    figure.update_layout(height=250, margin=dict(t=50, b=10, l=30, r=30))
-    return figure
+RISK_LEVEL_COLORS = [NEUTRAL_GREY, "#f19c9c", BRAND_RED]
+RISK_LEVEL_TEXT_COLORS = [TEXT_DARK, "#c0504d", BRAND_RED]
+
+
+def risk_scale(probability, segment_edges, segment_names, level):
+    """Horizontal risk scale: big number + the three segments as zones (the customer's zone highlighted) + a marker."""
+    zones = ""
+    labels = ""
+    for zone_level, (start, end, name) in enumerate(zip(segment_edges[:-1], segment_edges[1:], segment_names)):
+        width = (end - start) * 100
+        active = zone_level == level
+        zones += (f'<div class="mn-scale-zone" style="width:{width:.2f}%;background:{RISK_LEVEL_COLORS[zone_level]};'
+                  f'opacity:{1 if active else 0.28}"></div>')
+        range_text = f"{start:.0%} – {end:.0%}" if end < 1 else f"≥ {start:.0%}"
+        labels += (f'<div class="mn-scale-label{" mn-scale-label-active" if active else ""}" style="width:{width:.2f}%">'
+                   f'{name}<span>{range_text}</span></div>')
+    marker_position = min(max(probability * 100, 0.8), 99.2)  # keep the marker fully visible at the extremes
+    return (f'<div class="mn-scale" data-probability="{probability:.6f}">'
+            f'<div class="mn-scale-value" style="color:{RISK_LEVEL_TEXT_COLORS[level]}">{probability:.0%}</div>'
+            f'<div class="mn-scale-caption">Probabilidad de abandono</div>'
+            f'<div class="mn-scale-track">{zones}<div class="mn-scale-marker" style="left:{marker_position:.2f}%"></div></div>'
+            f'<div class="mn-scale-labels">{labels}</div></div>')
 
 
 def register_plotly_template():
