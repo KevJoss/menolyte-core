@@ -28,7 +28,7 @@ MODELS_DIRECTORY = PROJECT_DIRECTORY / "models"
 
 HIGHLIGHT_COLOR = "#d62728"
 NEUTRAL_COLOR = "#b0b7c3"
-RETENTION_COLOR = "#1f77b4"
+RETENTION_COLOR = NEUTRAL_COLOR  # "lowers risk" in brand grey: only risk is colored (red)
 RISK_SEGMENT_NAMES = ["Low risk", "Medium risk", "High risk"]
 
 st.set_page_config(page_title="Menolyte Core", page_icon="📡", layout="wide")
