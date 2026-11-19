@@ -1,0 +1,25 @@
+# Menolyte Core: global theme (presentation only, no app logic).
+# Streamlit reads this folder from the directory where `streamlit run` is executed (the repository root).
+
+[theme]
+base = "light"
+primaryColor = "#d62728"              # Menolyte red: active tab, primary button, sliders
+backgroundColor = "#ffffff"           # clean white canvas, lots of whitespace
+secondaryBackgroundColor = "#f5f6f8"  # very light grey for inputs and cards, separates without lines
+textColor = "#2d2d2d"                 # dark grey: softer than pure black, still high contrast
+borderColor = "#e3e6eb"               # subtle borders
+redColor = "#d62728"                  # Streamlit's semantic red (metric deltas, errors) = brand red
+grayColor = "#b0b7c3"                 # brand neutral grey
+linkColor = "#d62728"
+
+# Inter: modern SaaS sans-serif, loaded from Google Fonts; falls back to the system sans-serif if offline.
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+headingFontWeights = [700, 700, 600, 600, 600, 600]
+baseFontSize = 17                     # default is 16: one step up so it reads well on a projector
+metricValueFontSize = "2.4rem"        # large KPI numbers
+baseRadius = "0.6rem"
+buttonRadius = "0.6rem"
+showWidgetBorder = true
+
+[client]
+toolbarMode = "viewer"                # hides developer menu items (Deploy, rerun settings) during the demo
