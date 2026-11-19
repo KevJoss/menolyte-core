@@ -33,7 +33,7 @@ GLOBAL_CSS = f"""
 [data-testid="stMetric"] {{
     background: #ffffff;
     border: 1px solid {BORDER};
-    border-left: 4px solid {BRAND_RED};
+    border-left: 4px solid {NEUTRAL_GREY};  /* neutral: red is reserved for risk (deltas, charts, primary action) */
     border-radius: 0.75rem;
     padding: 1.1rem 1.25rem;
     box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.06);
@@ -45,6 +45,21 @@ GLOBAL_CSS = f"""
 }}
 [data-testid="stMetricValue"] {{ font-weight: 700; color: {TEXT_DARK}; line-height: 1.15; }}
 [data-testid="stMetricDelta"] {{ font-weight: 500; }}
+/* Cards in the same row share the same height, even when one label wraps to two lines */
+[data-testid="stColumn"]:has([data-testid="stMetric"]) > [data-testid="stVerticalBlock"],
+[data-testid="stColumn"] [data-testid="stElementContainer"]:has([data-testid="stMetric"]),
+[data-testid="stColumn"] [data-testid="stElementContainer"]:has([data-testid="stMetric"]) > div {{ height: 100%; }}
+/* Labels and deltas wrap onto a second line instead of being cut with "…" */
+[data-testid="stMetricLabel"] [data-testid="stMarkdownContainer"], [data-testid="stMetricLabel"] p,
+[data-testid="stMetricDelta"] [data-testid="stMarkdownContainer"], [data-testid="stMetricDelta"] p {{
+    white-space: normal !important; overflow: visible !important; text-overflow: clip !important; line-height: 1.3;
+}}
+
+/* ---------- Filter chips: dark grey instead of red (red = risk only) ---------- */
+span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
+
+/* ---------- Analyst tools hidden during the demo: Plotly modebar, heading link icons ---------- */
+[data-testid="stPlotlyChart"] .modebar-container, [data-testid="stHeaderActionElements"] {{ display: none !important; }}
 
 /* ---------- Tabs: sticky navigation bar, bigger text readable from the back of the room ---------- */
 /* Streamlit 1.60 markup: [data-testid="stTabs"] > div > ([role="tablist"] > [data-testid="stTab"]) + [role="tabpanel"] */
@@ -148,9 +163,11 @@ def register_plotly_template():
         colorway=BRAND_COLORWAY,
         xaxis={**axis_style, "showgrid": False},  # one grid direction is enough: less ink, same information
         yaxis=axis_style,
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=13), title_font=dict(size=13, color=MID_GREY)),
+        # Horizontal legend above the plot: never steals width from the chart, long names are not cut
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=13), title_font=dict(size=13, color=MID_GREY),
+                    orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
         hoverlabel=dict(bgcolor="#ffffff", bordercolor=BORDER, font=dict(family=FONT_FAMILY, size=13, color=TEXT_DARK)),
-        margin=dict(t=70, l=20, r=20, b=20),
+        margin=dict(t=70, l=20, r=36, b=20),  # right margin: room for the last tick label (e.g. "100%")
         bargap=0.25,
     ))
     pio.templates.default = "plotly_white+menolyte"

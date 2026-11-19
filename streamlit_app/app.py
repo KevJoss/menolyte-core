@@ -298,12 +298,14 @@ def show_what_if_panel(customer_values, current_probability):
     result_columns = st.columns(4)
     result_columns[0].metric("Dinero en riesgo hoy", f"${money_at_risk_now:,.2f}/mes",
                              help="Probabilidad de abandono × cuota mensual")
-    result_columns[1].metric("Riesgo tras el cambio", f"{simulated_probability:.0%}",
-                             delta=f"{(simulated_probability - current_probability) * 100:+.0f} pts", delta_color="inverse")
+    risk_change_points = round((simulated_probability - current_probability) * 100)
+    result_columns[1].metric("Riesgo tras el cambio", f"{simulated_probability:.0%}",  # no badge when nothing changes
+                             delta=f"{risk_change_points:+.0f} pts" if risk_change_points != 0 else None, delta_color="inverse")
     result_columns[2].metric("Segmento tras el cambio", simulated_segment,
                              delta=f"antes: {current_segment}" if simulated_segment != current_segment else None, delta_color="off")
     result_columns[3].metric("Dinero en riesgo tras el cambio", f"${simulated_probability * monthly_fee:,.2f}/mes",
-                             delta=f"{'-' if money_at_risk_change < 0 else '+'}${abs(money_at_risk_change):,.2f}/mes",
+                             delta=(f"{'-' if money_at_risk_change < 0 else '+'}${abs(money_at_risk_change):,.2f}/mes"
+                                    if round(money_at_risk_change, 2) != 0 else None),
                              delta_color="inverse")
     st.caption("⚠️ Esto muestra cómo cambia la predicción del modelo, no garantiza que el cliente se quede: el modelo "
                "aprendió asociaciones, no causas. La cuota mensual se mantiene fija. Valida cada acción con un grupo de control.")
@@ -390,8 +392,9 @@ with eda_tab:
         segment_churn_rate = segment_data["churned"].mean()
         kpi_columns = st.columns(4)
         kpi_columns[0].metric("Clientes en el grupo", f"{len(segment_data):,}")
-        kpi_columns[1].metric("Tasa de abandono", f"{segment_churn_rate:.1%}",
-                              delta=f"{(segment_churn_rate - overall_churn_rate) * 100:+.1f} pts vs. toda la base",
+        churn_rate_gap_points = round((segment_churn_rate - overall_churn_rate) * 100, 1)
+        kpi_columns[1].metric("Tasa de abandono", f"{segment_churn_rate:.1%}",  # no delta badge when the gap rounds to zero
+                              delta=f"{churn_rate_gap_points:+.1f} pts vs. toda la base" if churn_rate_gap_points != 0 else None,
                               delta_color="inverse")
         kpi_columns[2].metric("Cuota mensual promedio", f"${segment_data['MonthlyCharges'].mean():,.2f}")
         kpi_columns[3].metric("Ingreso mensual perdido por abandono",
@@ -414,7 +417,7 @@ with eda_tab:
                             color_discrete_map={"above": HIGHLIGHT_COLOR, "below": NEUTRAL_COLOR},
                             labels={"churn_rate": "Tasa de abandono", "customers": "Clientes", breakdown_variable: breakdown_name})
             figure.add_hline(y=overall_churn_rate, line_dash="dash", line_color="#2d2d2d",
-                             annotation_text="Promedio de toda la base", annotation_position="top left")
+                             annotation_text="Promedio de toda la base", annotation_position="top right")
             figure.update_layout(yaxis_tickformat=".0%", yaxis_title="Tasa de abandono", xaxis_title="",
                                  showlegend=False, title=f"Tasa de abandono por {breakdown_name.lower()}")
             st.plotly_chart(figure, width="stretch", theme=None)
@@ -458,16 +461,28 @@ with performance_tab:
         cross_validation_value = metadata["cross_validation_metrics"][metric_name]
         metric_label, metric_help = metric_display[metric_name]
         column.metric(metric_label, f"{test_value:.3f}",
-                      delta=f"{test_value - cross_validation_value:+.3f} vs. validación cruzada", help=metric_help)
+                      delta=f"{test_value - cross_validation_value:+.3f} vs. validación cruzada", help=metric_help,
+                      delta_color="off")  # grey: a small test-vs-CV gap is expected, not an alarm
 
     chart_columns = st.columns(2)
     with chart_columns[0]:
-        confusion_matrix = app_results["test_confusion_matrix"].to_numpy()
-        figure = px.imshow(confusion_matrix, text_auto=True, color_continuous_scale=["#ffffff", NEUTRAL_COLOR],
-                           x=["Predijo: se queda", "Predijo: se va"], y=["En realidad: se quedó", "En realidad: se fue"],
-                           title="Aciertos y errores en 1,409 clientes nuevos")
-        figure.update_layout(coloraxis_showscale=False)
-        figure.update_traces(textfont_size=20)
+        confusion_matrix = app_results["test_confusion_matrix"].to_numpy()  # rows: actual (stays, churns); cols: predicted
+        # Color by meaning, not by count: correct = grey, false alarm = light red, missed churner (costliest) = red
+        cell_kinds = [["Acierto", "Falsa alarma"], ["No detectado", "Detectado"]]
+        cell_color_codes = [[0, 1], [2, 0]]
+        predicted_labels, actual_labels = ["Predijo: se queda", "Predijo: se va"], ["Se quedó", "Se fue"]
+        figure = go.Figure(go.Heatmap(z=cell_color_codes, x=predicted_labels, y=actual_labels, zmin=0, zmax=2,
+                                      colorscale=[[0, "#eef0f3"], [0.5, "#f9d4d4"], [1, HIGHLIGHT_COLOR]],
+                                      showscale=False, xgap=6, ygap=6, hoverinfo="skip"))
+        for row in range(2):
+            for column in range(2):
+                figure.add_annotation(x=predicted_labels[column], y=actual_labels[row], showarrow=False,
+                                      text=f"<b>{confusion_matrix[row, column]:,}</b><br>{cell_kinds[row][column]}",
+                                      font={"size": 18, "color": "#ffffff" if cell_color_codes[row][column] == 2 else "#2d2d2d"})
+        figure.update_layout(title=f"{confusion_matrix[1, 0]:,} de {confusion_matrix[1].sum():,} clientes que se iban "
+                                   "pasaron sin detectar",
+                             yaxis={"autorange": "reversed", "title": "En realidad", "showgrid": False},
+                             xaxis={"side": "bottom", "showgrid": False})
         st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         model_comparison = app_results["model_comparison_cv"]
@@ -714,7 +729,7 @@ with business_tab:
                                     name="Elegir al azar"))
         figure.add_vline(x=contact_share, line_dash="dot")
         figure.update_layout(title="Clientes que se van alcanzados vs. clientes contactados", xaxis_tickformat=".0%",
-                             yaxis_tickformat=".0%", xaxis_title="Clientes contactados", yaxis_title="Clientes que se van alcanzados")
+                             yaxis_tickformat=".0%", xaxis_title="Clientes contactados", yaxis_title="De los que se van, alcanzados")
         st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         segment_summary = (ranked_customers.groupby("risk_segment")
@@ -722,11 +737,11 @@ with business_tab:
                                 monthly_revenue=("MonthlyCharges", "sum"))
                            .reindex(RISK_SEGMENT_NAMES).reset_index())
         figure = px.bar(segment_summary, x="risk_segment", y="actual_churn_rate", text_auto=".0%", color="risk_segment",
-                        color_discrete_map=dict(zip(RISK_SEGMENT_NAMES, [NEUTRAL_COLOR, "#f2a65a", HIGHLIGHT_COLOR])),
+                        color_discrete_map=dict(zip(RISK_SEGMENT_NAMES, [NEUTRAL_COLOR, "#f19c9c", HIGHLIGHT_COLOR])),
                         hover_data=["customers", "monthly_revenue"], title="Abandono real por segmento de riesgo",
                         labels={"risk_segment": "segmento", "actual_churn_rate": "abandono real", "customers": "clientes",
                                 "monthly_revenue": "ingreso mensual"})
-        figure.update_layout(yaxis_tickformat=".0%", showlegend=False, xaxis_title="", yaxis_title="Clientes que efectivamente se fueron")
+        figure.update_layout(yaxis_tickformat=".0%", showlegend=False, xaxis_title="", yaxis_title="Se fueron")
         st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### Lista de prioridad para el equipo de retención")
