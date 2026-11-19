@@ -26,8 +26,8 @@ GLOBAL_CSS = f"""
 .block-container {{ padding-top: 2.5rem; padding-bottom: 4rem; max-width: 1400px; }}
 
 /* ---------- Hide Streamlit's developer chrome during the demo ---------- */
-[data-testid="stAppDeployButton"], [data-testid="stMainMenu"], footer {{ display: none !important; }}
-[data-testid="stHeader"] {{ background: transparent; }}
+/* The header only held those controls: hide it so the sticky tab bar can use the top edge */
+[data-testid="stAppDeployButton"], [data-testid="stMainMenu"], [data-testid="stHeader"], footer {{ display: none !important; }}
 
 /* ---------- KPI cards: every st.metric becomes a card ---------- */
 [data-testid="stMetric"] {{
@@ -46,10 +46,19 @@ GLOBAL_CSS = f"""
 [data-testid="stMetricValue"] {{ font-weight: 700; color: {TEXT_DARK}; line-height: 1.15; }}
 [data-testid="stMetricDelta"] {{ font-weight: 500; }}
 
-/* ---------- Tabs: bigger, readable from the back of the room ---------- */
-[data-baseweb="tab-list"] {{ gap: 0.5rem; border-bottom: 1px solid {BORDER}; }}
-[data-baseweb="tab"] {{ padding: 0.6rem 1rem; }}
-[data-baseweb="tab"] p {{ font-size: 1.05rem; font-weight: 600; }}
+/* ---------- Tabs: sticky navigation bar, bigger text readable from the back of the room ---------- */
+/* Streamlit 1.60 markup: [data-testid="stTabs"] > div > ([role="tablist"] > [data-testid="stTab"]) + [role="tabpanel"] */
+[data-testid="stTabs"] [role="tablist"] {{
+    position: sticky; top: 0; z-index: 100;           /* stays pinned while stMain scrolls */
+    background: rgba(255, 255, 255, 0.96);            /* opaque enough that content never shows through */
+    backdrop-filter: blur(6px);
+    gap: 0.5rem; border-bottom: 1px solid {BORDER};
+    padding-top: 0.5rem;
+    box-shadow: 0 6px 12px -10px rgba(16, 24, 40, 0.25);  /* subtle edge so it reads as "floating" over content */
+}}
+[data-testid="stTab"] {{ padding: 0.6rem 1rem; }}
+[data-testid="stTab"] p {{ font-size: 1.05rem; font-weight: 600; color: {MID_GREY}; }}
+[data-testid="stTab"][aria-selected="true"] p {{ color: {TEXT_DARK}; }}
 
 /* ---------- Section rhythm: clear breathing room before each section title ---------- */
 [data-testid="stMarkdownContainer"] h3, [data-testid="stMarkdownContainer"] h4 {{ margin-top: 1.75rem; color: {TEXT_DARK}; }}
@@ -97,6 +106,8 @@ GLOBAL_CSS = f"""
 [data-testid="stPlotlyChart"] {{
     border: 1px solid {BORDER}; border-radius: 0.75rem; padding: 0.5rem; background: #ffffff;
 }}
+/* Streamlit 1.60 injects the theme's secondary background as plot_bgcolor; keep the plot area white */
+[data-testid="stPlotlyChart"] rect.bg {{ fill: #ffffff !important; }}
 </style>
 """
 
