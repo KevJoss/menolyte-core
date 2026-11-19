@@ -18,7 +18,7 @@ from lime.lime_tabular import LimeTabularExplainer
 from sklearn.metrics import fbeta_score, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find styles.py also when run from tests (AppTest)
-from styles import apply_global_styles, register_plotly_template
+from styles import apply_global_styles, brand_header, figure_card, html, register_plotly_template, step_card
 
 warnings.filterwarnings("ignore")
 
@@ -284,11 +284,54 @@ def show_what_if_panel(customer_values, current_probability):
 # ----------------------------------------------------------------------------------------------------------------------
 # Header
 # ----------------------------------------------------------------------------------------------------------------------
-st.title("📡 Menolyte Core")
-st.caption("Churn risk prediction and explainable retention for mid-sized internet service providers")
+html(brand_header("Churn risk prediction and explainable retention for mid-sized internet service providers"))
 
-eda_tab, performance_tab, prediction_tab, business_tab = st.tabs(
-    ["📊 Exploratory Data Analysis", "🧪 Model Performance", "🔍 Prediction & Explainability", "💼 Business Application"])
+TAB_LABELS = ["🏠 Inicio", "📊 Exploratory Data Analysis", "🧪 Model Performance", "🔍 Prediction & Explainability",
+              "💼 Business Application"]
+home_tab, eda_tab, performance_tab, prediction_tab, business_tab = st.tabs(TAB_LABELS)
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Home: value proposition, three key figures (read from the exported results) and a short guide
+# ----------------------------------------------------------------------------------------------------------------------
+with home_tab:
+    html('<div class="mn-hero"><div class="mn-eyebrow">Retención de clientes para ISP</div>'
+         '<div class="mn-headline">Descubre qué clientes se irán, por qué y qué hacer, '
+         '<span>antes de que se vayan.</span></div>'
+         '<div class="mn-subhead">Menolyte Core analiza cada cliente, estima su riesgo de abandono, explica las razones '
+         'en lenguaje simple y le dice a tu equipo a quién llamar primero.</div></div>')
+
+    # Same definitions as the Business Application tab, on the 1,409 test customers the model never saw
+    home_test_customers = app_results["test_predictions"]
+    home_high_risk = home_test_customers[home_test_customers["churn_probability"].map(risk_segment_of) == "High risk"]
+    home_contact_share = 0.20
+    home_contacted = home_test_customers[home_test_customers["share_of_customers_contacted"] <= home_contact_share]
+    home_churners_reached = home_contacted["actual_churn"].sum() / home_test_customers["actual_churn"].sum()
+    home_recall = metadata["test_metrics"]["recall"]
+
+    figure_columns = st.columns(3, gap="medium")
+    figure_columns[0].markdown(figure_card(
+        f"{home_recall:.0%}", "de los clientes que se van, el modelo los detecta a tiempo",
+        f"Es decir, unos {home_recall * 10:.0f} de cada 10. Medido en {len(home_test_customers):,} clientes "
+        "que el modelo nunca vio."), unsafe_allow_html=True)
+    figure_columns[1].markdown(figure_card(
+        f"{home_churners_reached:.0%}", f"de los que se van, llamando solo al {home_contact_share:.0%} más riesgoso",
+        f"{home_churners_reached / home_contact_share:.1f} veces más efectivo que llamar a clientes al azar."),
+        unsafe_allow_html=True)
+    figure_columns[2].markdown(figure_card(
+        f"${home_high_risk['MonthlyCharges'].sum():,.0f}", "de ingreso mensual en clientes de alto riesgo",
+        f"{len(home_high_risk):,} clientes con probabilidad de abandono ≥ {risk_segment_edges[2]:.0%}: "
+        "los primeros a proteger."), unsafe_allow_html=True)
+
+    html('<div class="mn-section-title">Cómo usar Menolyte Core</div>')
+    step_columns = st.columns(4, gap="medium")
+    how_to_steps = [
+        ("Conoce a tus clientes", TAB_LABELS[1], "Filtra por contrato, servicio o antigüedad y mira quiénes se van más."),
+        ("Confía en el modelo", TAB_LABELS[2], "Revisa qué tan bien acierta con clientes que nunca vio."),
+        ("Entiende a un cliente", TAB_LABELS[3], "Ingresa sus datos: verás su riesgo, las razones y qué acción lo baja."),
+        ("Actúa", TAB_LABELS[4], "Elige cuántos clientes puede llamar tu equipo y descarga la lista priorizada."),
+    ]
+    for step_number, (step_column, (title, tab_name, text)) in enumerate(zip(step_columns, how_to_steps), start=1):
+        step_column.markdown(step_card(step_number, title, tab_name, text), unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # A. Exploratory Data Analysis
