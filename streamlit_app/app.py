@@ -484,10 +484,10 @@ with eda_tab:
                 lost_by_contract = lost_revenue.groupby("Contrato")["MonthlyCharges"].sum()
                 for contract_name, total in lost_by_contract.items():
                     figure.add_annotation(x=total, y=contract_name, text=f"<b>${total:,.0f}</b>", showarrow=False,
-                                          xanchor="left", xshift=6, font={"size": 13, "color": "#2d2d2d"})
+                                          xanchor="left", xshift=6, font={"size": 15, "color": "#2d2d2d"})
                 figure.update_layout(xaxis_title="Ingreso mensual perdido (USD)", yaxis_title="", legend_title="Internet",
                                      xaxis_tickprefix="$", uniformtext_minsize=11, uniformtext_mode="hide",
-                                     xaxis_range=[0, lost_by_contract.max() * 1.22])
+                                     xaxis_range=[0, lost_by_contract.max() * 1.28])
                 st.plotly_chart(figure, width="stretch", theme=None)
 
         chart_columns = st.columns(2)
@@ -514,8 +514,8 @@ with eda_tab:
                                             marker={"color": HIGHLIGHT_COLOR, "size": 16},
                                             text=[f"{rate:.0%}" for rate in without_rates], textposition="bottom center",
                                             hovertemplate="Sin el servicio: %{x:.1%}<extra></extra>"))
-                figure.update_layout(title="Abandono con y sin cada servicio adicional (clientes con internet)",
-                                     xaxis_title="Tasa de abandono", xaxis_tickformat=".0%", yaxis_title="",
+                figure.update_layout(title="Abandono con y sin cada servicio adicional",
+                                     xaxis_title="Tasa de abandono (clientes con internet)", xaxis_tickformat=".0%", yaxis_title="",
                                      xaxis_rangemode="tozero")
                 st.plotly_chart(figure, width="stretch", theme=None)
         with chart_columns[1]:
@@ -535,7 +535,8 @@ with performance_tab:
     hyperparameters = metadata["hyperparameters"]
     st.caption("Medido en 1,409 clientes que el modelo nunca vio. Métrica principal: **F2**, que da el doble de peso a "
                "*detectar* a quien se va (recall) que a no equivocarse al marcarlo (precisión), porque no detectar a un "
-               "cliente que se va es el error más caro.")
+               "cliente que se va es el error más caro. Debajo de cada número: la diferencia frente a la validación "
+               "cruzada (cerca de 0 = rinde igual con clientes nuevos).")
 
     metric_display = {
         "f2": ("F2 · métrica principal", "Combina recall y precisión, dando el doble de peso al recall."),
@@ -550,7 +551,7 @@ with performance_tab:
         cross_validation_value = metadata["cross_validation_metrics"][metric_name]
         metric_label, metric_help = metric_display[metric_name]
         column.metric(metric_label, f"{test_value:.3f}",
-                      delta=f"{test_value - cross_validation_value:+.3f} vs. validación cruzada", help=metric_help,
+                      delta=f"{test_value - cross_validation_value:+.3f}", help=metric_help,
                       delta_color="off")  # grey: a small test-vs-CV gap is expected, not an alarm
 
     chart_columns = st.columns(2)
@@ -576,14 +577,15 @@ with performance_tab:
     with chart_columns[1]:
         model_comparison = app_results["model_comparison_cv"]
         metric_means = (model_comparison[[f"{metric}_mean" for metric in ["f2", "recall", "precision", "f1", "roc_auc"]]]
-                        .rename(columns=lambda column: column.replace("_mean", "").upper())
+                        .rename(columns=lambda column: {"f2": "F2", "recall": "Recall", "precision": "Precisión", "f1": "F1",
+                                                        "roc_auc": "ROC-AUC"}[column.replace("_mean", "")])
                         .reset_index(names="model").melt(id_vars="model", var_name="metric", value_name="score"))
         figure = px.bar(metric_means, x="metric", y="score", color="model", barmode="group",
                         color_discrete_map={"SVM (RBF)": HIGHLIGHT_COLOR, "Random Forest": NEUTRAL_COLOR,
                                             "Logistic Regression": "#6b7280"},
                         labels={"metric": "métrica", "score": "puntaje", "model": "modelo"},
                         title="El SVM elegido frente a otros modelos")
-        figure.update_layout(yaxis_range=[0, 1], xaxis_title="", yaxis_title="Puntaje (validación cruzada)", legend_title="")
+        figure.update_layout(yaxis_range=[0, 1], xaxis_title="", yaxis_title="Puntaje", legend_title="", margin_t=105)  # room for the two-line legend under the title
         st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### ¿Podemos creerle al porcentaje?")
@@ -607,7 +609,7 @@ with performance_tab:
                                     hovertemplate="El modelo dijo %{x:.0%}<br>Se fueron %{y:.0%}<br>Clientes: %{customdata:,}"
                                                   "<extra></extra>"))
         figure.update_layout(title="Cuando el modelo dice 70%, se van unos 7 de cada 10",
-                             xaxis_title="Probabilidad que dijo el modelo", yaxis_title="Clientes que se fueron de verdad",
+                             xaxis_title="Probabilidad que dijo el modelo", yaxis_title="Se fueron de verdad",
                              xaxis_tickformat=".0%", yaxis_tickformat=".0%", xaxis_range=[0, 1], yaxis_range=[0, 1])
         st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
@@ -698,7 +700,7 @@ with performance_tab:
             # Color range starts at 0.68: failed configs (F2 = 0) would otherwise flatten all the good cells into one red
             zmin=0.68, zmax=float(np.nanmax(f2_grid.to_numpy())),
             colorscale=[[0, "#ffffff"], [0.4, "#fbe3e3"], [0.75, "#f19c9c"], [1, "#e05a5b"]], texttemplate="%{z:.4f}",
-            textfont={"size": 13, "color": "#2d2d2d"}, xgap=3, ygap=3, showscale=False,
+            textfont={"size": 14, "color": "#2d2d2d"}, xgap=3, ygap=3, showscale=False,
             hovertemplate="C = %{x}<br>gamma = %{y}<br>F2 = %{z:.4f}<extra></extra>"))
         best_gamma, best_c = np.unravel_index(np.nanargmax(f2_grid.to_numpy()), f2_grid.shape)
         figure.add_shape(type="rect", x0=best_c - 0.5, x1=best_c + 0.5, y0=best_gamma - 0.5, y1=best_gamma + 0.5,
@@ -807,7 +809,7 @@ with prediction_tab:
                             color=np.where(shap_chart_data["risk points"] > 0, "Sube el riesgo", "Baja el riesgo"),
                             color_discrete_map={"Sube el riesgo": HIGHLIGHT_COLOR, "Baja el riesgo": RETENTION_COLOR},
                             labels={"risk points": "puntos de riesgo", "factor": "factor"},
-                            title=f"SHAP: puntos de riesgo sumados al cliente promedio ({metadata['shap_base_value']:.0%})")
+                            title=f"SHAP: puntos sumados al cliente promedio ({metadata['shap_base_value']:.0%})")
             figure.update_layout(xaxis_title="Puntos de riesgo de abandono", yaxis_title="", legend_title="")
             st.plotly_chart(figure, width="stretch", theme=None)
         with explanation_columns[1]:
@@ -817,7 +819,7 @@ with prediction_tab:
                             color=np.where(lime_weights["weight"] > 0, "Sube el riesgo", "Baja el riesgo"),
                             color_discrete_map={"Sube el riesgo": HIGHLIGHT_COLOR, "Baja el riesgo": RETENTION_COLOR},
                             labels={"weight": "efecto", "condition": "condición"},
-                            title="LIME: aproximación lineal local alrededor de este cliente")
+                            title="LIME: aproximación local para este cliente")
             figure.update_layout(xaxis_title="Efecto en la probabilidad de abandono", yaxis_title="", legend_title="")
             st.plotly_chart(figure, width="stretch", theme=None)
 
@@ -981,7 +983,7 @@ with form_curve_slot:
                      labels={"fields asked": "datos pedidos", "value": "puntaje", "variable": "métrica"},
                      title=f"Con {len(FORM_FIELDS)} datos el modelo rinde casi igual que con los 19")
     figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR,
-                     annotation_text="Formulario de la app", annotation_position="bottom right")
+                     annotation_text="Formulario de la app", annotation_position="top right")
     figure.update_layout(xaxis_title="Datos pedidos (los más importantes primero)", yaxis_title="Puntaje en prueba",
                          legend_title="", xaxis_dtick=1)
     st.plotly_chart(figure, width="stretch", theme=None)
