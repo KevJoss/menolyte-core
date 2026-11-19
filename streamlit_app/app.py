@@ -3,6 +3,7 @@
 Loads the pipeline and results exported by telco_churn_optimization_xai.ipynb. Nothing is retrained here.
 Run locally from the project folder:  streamlit run streamlit_app/app.py
 """
+import sys
 import warnings
 from pathlib import Path
 
@@ -16,6 +17,9 @@ import streamlit as st
 from lime.lime_tabular import LimeTabularExplainer
 from sklearn.metrics import fbeta_score, roc_auc_score
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # find styles.py also when run from tests (AppTest)
+from styles import apply_global_styles, register_plotly_template
+
 warnings.filterwarnings("ignore")
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parent.parent
@@ -28,6 +32,8 @@ RETENTION_COLOR = "#1f77b4"
 RISK_SEGMENT_NAMES = ["Low risk", "Medium risk", "High risk"]
 
 st.set_page_config(page_title="Menolyte Core", page_icon="📡", layout="wide")
+apply_global_styles()
+register_plotly_template()
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -330,19 +336,19 @@ with eda_tab:
             figure.add_hline(y=overall_churn_rate, line_dash="dash", line_color=HIGHLIGHT_COLOR,
                              annotation_text="All customers")
             figure.update_layout(yaxis_tickformat=".0%", yaxis_title="Churn rate", title=f"Churn rate by {breakdown_variable}")
-            st.plotly_chart(figure, width="stretch")
+            st.plotly_chart(figure, width="stretch", theme=None)
         with chart_columns[1]:
             figure = px.histogram(segment_data, x="tenure", color="Churn", barmode="overlay", histnorm="percent", nbins=36,
                                   color_discrete_map={"Yes": HIGHLIGHT_COLOR, "No": NEUTRAL_COLOR},
                                   title="Months as a customer: who stays vs who leaves")
             figure.update_layout(xaxis_title="Months as a customer", yaxis_title="% of group")
-            st.plotly_chart(figure, width="stretch")
+            st.plotly_chart(figure, width="stretch", theme=None)
 
         figure = px.box(segment_data, x="Churn", y="MonthlyCharges", color="Churn",
                         color_discrete_map={"Yes": HIGHLIGHT_COLOR, "No": NEUTRAL_COLOR},
                         title="Monthly fee of customers who stay vs leave")
         figure.update_layout(yaxis_title="Monthly fee (USD)", showlegend=False)
-        st.plotly_chart(figure, width="stretch")
+        st.plotly_chart(figure, width="stretch", theme=None)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # B. Model Performance
@@ -363,20 +369,22 @@ with performance_tab:
     chart_columns = st.columns(2)
     with chart_columns[0]:
         confusion_matrix = app_results["test_confusion_matrix"].to_numpy()
-        figure = px.imshow(confusion_matrix, text_auto=True, color_continuous_scale="Blues",
+        figure = px.imshow(confusion_matrix, text_auto=True, color_continuous_scale=["#ffffff", NEUTRAL_COLOR],
                            x=["Predicted: stays", "Predicted: churns"], y=["Actual: stays", "Actual: churns"],
                            title="Confusion matrix on the test set (1,409 unseen customers)")
         figure.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(figure, width="stretch")
+        st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         model_comparison = app_results["model_comparison_cv"]
         metric_means = (model_comparison[[f"{metric}_mean" for metric in ["f2", "recall", "precision", "f1", "roc_auc"]]]
                         .rename(columns=lambda column: column.replace("_mean", "").upper())
                         .reset_index(names="model").melt(id_vars="model", var_name="metric", value_name="score"))
         figure = px.bar(metric_means, x="metric", y="score", color="model", barmode="group",
+                        color_discrete_map={"SVM (RBF)": HIGHLIGHT_COLOR, "Random Forest": NEUTRAL_COLOR,
+                                            "Logistic Regression": "#6b7280"},
                         title="Model comparison (5-fold cross-validation, default hyperparameters)")
         figure.update_layout(yaxis_range=[0, 1])
-        st.plotly_chart(figure, width="stretch")
+        st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### Hyperparameter optimization (same model, folds and budget of 36 configurations)")
     strategies = app_results["optimization_strategies"].reset_index(names="strategy")
@@ -388,11 +396,11 @@ with performance_tab:
         figure = px.bar(strategies, x="strategy", y="cv_f2", text_auto=".4f", title="Best cross-validated F2",
                         color_discrete_sequence=[RETENTION_COLOR])
         figure.update_layout(yaxis_range=[strategies["cv_f2"].min() - 0.02, strategies["cv_f2"].max() + 0.01])
-        st.plotly_chart(figure, width="stretch")
+        st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         figure = px.bar(strategies, x="strategy", y="optimization_seconds", text_auto=".1f",
-                        title="Optimization time (seconds)", color_discrete_sequence=["darkorange"])
-        st.plotly_chart(figure, width="stretch")
+                        title="Optimization time (seconds)", color_discrete_sequence=[NEUTRAL_COLOR])
+        st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### Multi-objective optimization (NSGA-II): F2 vs inference time")
     nsga2_trials = app_results["nsga2_trials"]
@@ -411,24 +419,26 @@ with performance_tab:
                                 name="Selected model (Grid Search winner)"))
     figure.update_layout(xaxis_title="Inference time (ms per 1,000 customers) — lower is better",
                          yaxis_title="Cross-validated F2 — higher is better", height=450)
-    st.plotly_chart(figure, width="stretch")
+    st.plotly_chart(figure, width="stretch", theme=None)
     st.caption("The selected model is not dominated: it sits at the high-F2 end of the front. The faster 'knee' "
                "solutions save a few hundredths of a millisecond per customer, irrelevant at this scale.")
 
     st.markdown("#### What drives the predictions: SHAP (selected SVM) vs Random Forest importance")
     importance = app_results["importance_comparison"][["SHAP (SVM)", "Random Forest MDI"]].iloc[::-1].reset_index(names="variable")
     figure = px.bar(importance.melt(id_vars="variable", var_name="method", value_name="normalized importance"),
-                    x="normalized importance", y="variable", color="method", barmode="group", orientation="h", height=600)
-    st.plotly_chart(figure, width="stretch")
+                    x="normalized importance", y="variable", color="method", barmode="group", orientation="h", height=600,
+                    color_discrete_map={"SHAP (SVM)": HIGHLIGHT_COLOR, "Random Forest MDI": NEUTRAL_COLOR})
+    st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### How many form fields does the model really need?")
     curve = form_size_curve()
     chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
     figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
+                     color_discrete_map={"F2": "#2d2d2d", "ROC-AUC": NEUTRAL_COLOR},
                      title="Test scores asking only the k most important fields (SHAP order)")
     figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR)
     figure.update_layout(yaxis_title="Test score", legend_title="", xaxis_dtick=1)
-    st.plotly_chart(figure, width="stretch")
+    st.plotly_chart(figure, width="stretch", theme=None)
     st.caption(f"Order: {', '.join(FIELD_RANKING)}. Fields not asked take the typical training value; total paid is "
                f"computed as months × monthly fee. The app's form asks {len(FORM_FIELDS)} fields (dotted line): "
                f"F2 {chosen_form['F2']:.3f} vs {metadata['test_metrics']['f2']:.3f} with all 19 fields, ROC-AUC "
@@ -514,7 +524,7 @@ with prediction_tab:
                             color_discrete_map={"Raises risk": HIGHLIGHT_COLOR, "Lowers risk": RETENTION_COLOR},
                             title=f"SHAP: points of risk added to the average customer ({metadata['shap_base_value']:.0%})")
             figure.update_layout(xaxis_title="Points of churn risk", yaxis_title="", legend_title="")
-            st.plotly_chart(figure, width="stretch")
+            st.plotly_chart(figure, width="stretch", theme=None)
         with explanation_columns[1]:
             lime_weights = pd.DataFrame(lime_conditions, columns=["condition", "weight"]).iloc[::-1]
             figure = px.bar(lime_weights, x="weight", y="condition", orientation="h", text_auto=".2f",
@@ -522,7 +532,7 @@ with prediction_tab:
                             color_discrete_map={"Raises risk": HIGHLIGHT_COLOR, "Lowers risk": RETENTION_COLOR},
                             title="LIME: local linear approximation around this customer")
             figure.update_layout(xaxis_title="Effect on churn probability", yaxis_title="", legend_title="")
-            st.plotly_chart(figure, width="stretch")
+            st.plotly_chart(figure, width="stretch", theme=None)
 
         risk_raising_drivers = [variable for variable in top_drivers.index if top_drivers[variable] > 0]
         summary_factors = ", ".join(f"{PLAIN_LANGUAGE_LABELS[variable].lower()} ({describe_value(variable, input_values[variable])})"
@@ -586,7 +596,7 @@ with business_tab:
         figure.add_vline(x=contact_share, line_dash="dot")
         figure.update_layout(title="Churners reached vs customers contacted", xaxis_tickformat=".0%", yaxis_tickformat=".0%",
                              xaxis_title="Customers contacted", yaxis_title="Churners reached")
-        st.plotly_chart(figure, width="stretch")
+        st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         segment_summary = (ranked_customers.groupby("risk_segment")
                            .agg(customers=("actual_churn", "size"), actual_churn_rate=("actual_churn", "mean"),
@@ -596,7 +606,7 @@ with business_tab:
                         color_discrete_map={"Low risk": NEUTRAL_COLOR, "Medium risk": "#f2a65a", "High risk": HIGHLIGHT_COLOR},
                         hover_data=["customers", "monthly_revenue"], title="Actual churn rate by risk segment")
         figure.update_layout(yaxis_tickformat=".0%", showlegend=False, xaxis_title="", yaxis_title="Customers who actually left")
-        st.plotly_chart(figure, width="stretch")
+        st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### Priority list for the retention team")
     priority_list = (contacted_customers.merge(customer_data[["customerID"]], left_on="customer_index", right_index=True)
