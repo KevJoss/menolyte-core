@@ -19,7 +19,8 @@ from lime.lime_tabular import LimeTabularExplainer
 from sklearn.metrics import fbeta_score, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find styles.py also when run from tests (AppTest)
-from styles import apply_global_styles, brand_header, figure_card, html, register_plotly_template, step_card
+from styles import (action_card, apply_global_styles, brand_header, figure_card, html, register_plotly_template,
+                    risk_badge, risk_scale, step_card)
 
 warnings.filterwarnings("ignore")
 
@@ -155,6 +156,17 @@ def describe_lime_condition(condition):
         return f"{PLAIN_LANGUAGE_LABELS.get(variable, variable)}: {display_value(value)}"
     variable_pattern = r"\b(" + "|".join(sorted(PLAIN_LANGUAGE_LABELS, key=len, reverse=True)) + r")\b"
     return re.sub(variable_pattern, lambda match: PLAIN_LANGUAGE_LABELS[match.group(1)], condition)
+
+
+def plain_probability_sentence(probability):
+    """Churn probability as natural frequency ('7 of 10'); switches to 'of 100' for low risks to avoid '0 of 10'."""
+    out_of_ten, out_of_hundred = round(probability * 10), round(probability * 100)
+    if out_of_ten >= 1:
+        return f"Según el modelo, de cada 10 clientes con este perfil, unos <b>{out_of_ten}</b> se irían."
+    if out_of_hundred >= 1:
+        return (f"Según el modelo, de cada 100 clientes con este perfil, solo <b>{out_of_hundred}</b> "
+                f"se {'iría' if out_of_hundred == 1 else 'irían'}.")
+    return "Según el modelo, casi ningún cliente con este perfil se iría."
 
 
 def describe_value(variable, value):
@@ -298,12 +310,14 @@ def show_what_if_panel(customer_values, current_probability):
     result_columns = st.columns(4)
     result_columns[0].metric("Dinero en riesgo hoy", f"${money_at_risk_now:,.2f}/mes",
                              help="Probabilidad de abandono × cuota mensual")
-    result_columns[1].metric("Riesgo tras el cambio", f"{simulated_probability:.0%}",
-                             delta=f"{(simulated_probability - current_probability) * 100:+.0f} pts", delta_color="inverse")
+    risk_change_points = round((simulated_probability - current_probability) * 100)
+    result_columns[1].metric("Riesgo tras el cambio", f"{simulated_probability:.0%}",  # no badge when nothing changes
+                             delta=f"{risk_change_points:+.0f} pts" if risk_change_points != 0 else None, delta_color="inverse")
     result_columns[2].metric("Segmento tras el cambio", simulated_segment,
                              delta=f"antes: {current_segment}" if simulated_segment != current_segment else None, delta_color="off")
     result_columns[3].metric("Dinero en riesgo tras el cambio", f"${simulated_probability * monthly_fee:,.2f}/mes",
-                             delta=f"{'-' if money_at_risk_change < 0 else '+'}${abs(money_at_risk_change):,.2f}/mes",
+                             delta=(f"{'-' if money_at_risk_change < 0 else '+'}${abs(money_at_risk_change):,.2f}/mes"
+                                    if round(money_at_risk_change, 2) != 0 else None),
                              delta_color="inverse")
     st.caption("⚠️ Esto muestra cómo cambia la predicción del modelo, no garantiza que el cliente se quede: el modelo "
                "aprendió asociaciones, no causas. La cuota mensual se mantiene fija. Valida cada acción con un grupo de control.")
@@ -390,8 +404,9 @@ with eda_tab:
         segment_churn_rate = segment_data["churned"].mean()
         kpi_columns = st.columns(4)
         kpi_columns[0].metric("Clientes en el grupo", f"{len(segment_data):,}")
-        kpi_columns[1].metric("Tasa de abandono", f"{segment_churn_rate:.1%}",
-                              delta=f"{(segment_churn_rate - overall_churn_rate) * 100:+.1f} pts vs. toda la base",
+        churn_rate_gap_points = round((segment_churn_rate - overall_churn_rate) * 100, 1)
+        kpi_columns[1].metric("Tasa de abandono", f"{segment_churn_rate:.1%}",  # no delta badge when the gap rounds to zero
+                              delta=f"{churn_rate_gap_points:+.1f} pts vs. toda la base" if churn_rate_gap_points != 0 else None,
                               delta_color="inverse")
         kpi_columns[2].metric("Cuota mensual promedio", f"${segment_data['MonthlyCharges'].mean():,.2f}")
         kpi_columns[3].metric("Ingreso mensual perdido por abandono",
@@ -414,7 +429,7 @@ with eda_tab:
                             color_discrete_map={"above": HIGHLIGHT_COLOR, "below": NEUTRAL_COLOR},
                             labels={"churn_rate": "Tasa de abandono", "customers": "Clientes", breakdown_variable: breakdown_name})
             figure.add_hline(y=overall_churn_rate, line_dash="dash", line_color="#2d2d2d",
-                             annotation_text="Promedio de toda la base", annotation_position="top left")
+                             annotation_text="Promedio de toda la base", annotation_position="top right")
             figure.update_layout(yaxis_tickformat=".0%", yaxis_title="Tasa de abandono", xaxis_title="",
                                  showlegend=False, title=f"Tasa de abandono por {breakdown_name.lower()}")
             st.plotly_chart(figure, width="stretch", theme=None)
@@ -427,13 +442,90 @@ with eda_tab:
             figure.update_layout(xaxis_title="Meses como cliente", yaxis_title="% del grupo", legend_title="")
             st.plotly_chart(figure, width="stretch", theme=None)
 
-        figure = px.box(segment_data, x="Churn", y="MonthlyCharges", color="Churn",
-                        color_discrete_map={"Yes": HIGHLIGHT_COLOR, "No": NEUTRAL_COLOR},
-                        labels={"MonthlyCharges": "Cuota mensual", "Churn": "¿Se fue?"},
-                        title="Cuota mensual de quienes se quedan vs. quienes se van")
-        figure.update_xaxes(tickvals=list(stay_leave_names), ticktext=list(stay_leave_names.values()), title="")
-        figure.update_layout(yaxis_title="Cuota mensual (USD)", showlegend=False)
-        st.plotly_chart(figure, width="stretch", theme=None)
+        chart_columns = st.columns(2)
+        with chart_columns[0]:
+            # Contract × tenure band: where churn concentrates (the two variables that weigh most for the model)
+            tenure_band_labels = ["0–6", "7–12", "13–24", "25–48", "49–72"]
+            banded = segment_data.assign(tenure_band=pd.cut(segment_data["tenure"], bins=[-1, 6, 12, 24, 48, 72],
+                                                            labels=tenure_band_labels))
+            contract_order = [contract for contract in category_values["Contract"] if contract in set(banded["Contract"])]
+            churn_grid = banded.pivot_table(index="Contract", columns="tenure_band", values="churned", aggfunc="mean",
+                                            observed=False).reindex(index=contract_order, columns=tenure_band_labels)
+            size_grid = banded.pivot_table(index="Contract", columns="tenure_band", values="churned", aggfunc="size",
+                                           observed=False).reindex(index=contract_order, columns=tenure_band_labels)
+            figure = go.Figure(go.Heatmap(
+                z=churn_grid.to_numpy(), x=tenure_band_labels, y=[display_value(contract) for contract in contract_order],
+                customdata=size_grid.fillna(0).to_numpy(), zmin=0, zmax=max(float(np.nanmax(churn_grid.to_numpy())), 0.01),
+                colorscale=[[0, "#ffffff"], [0.35, "#fbe3e3"], [0.7, "#f19c9c"], [1, "#e05a5b"]],
+                texttemplate="%{z:.0%}", textfont={"size": 15, "color": "#2d2d2d"}, xgap=4, ygap=4, showscale=False,
+                hovertemplate="%{y}, %{x} meses<br>Tasa de abandono: %{z:.1%}<br>Clientes: %{customdata:,}<extra></extra>"))
+            figure.update_layout(title="Dónde se concentra el abandono: contrato × antigüedad",
+                                 xaxis_title="Meses como cliente", yaxis={"autorange": "reversed", "showgrid": False},
+                                 xaxis={"showgrid": False})
+            st.plotly_chart(figure, width="stretch", theme=None)
+        with chart_columns[1]:
+            # Money, not rates: monthly revenue of the customers who left, by contract and internet type
+            lost_revenue = (segment_data[segment_data["churned"] == 1]
+                            .groupby(["Contract", "InternetService"])["MonthlyCharges"].sum().reset_index())
+            if lost_revenue.empty:
+                st.info("Ningún cliente de este grupo se fue: no hay ingreso perdido.")
+            else:
+                lost_revenue["Contrato"] = lost_revenue["Contract"].map(display_value)
+                lost_revenue["Internet"] = lost_revenue["InternetService"].map(display_value)
+                figure = px.bar(lost_revenue, x="MonthlyCharges", y="Contrato", color="Internet", orientation="h",
+                                barmode="stack", text_auto="$,.0f",
+                                category_orders={"Contrato": [display_value(contract) for contract in category_values["Contract"]],
+                                                 "Internet": ["Fibra óptica", "DSL", "No"]},
+                                color_discrete_map={"Fibra óptica": HIGHLIGHT_COLOR, "DSL": "#6b7280", "No": NEUTRAL_COLOR},
+                                labels={"MonthlyCharges": "Ingreso mensual perdido"},
+                                title="¿Dónde se pierde el dinero? Ingreso mensual perdido")
+                # Labels only where they fit (no rotated/clipped text) + the total at the end of each bar
+                figure.update_traces(textposition="inside", insidetextanchor="middle", textangle=0)
+                lost_by_contract = lost_revenue.groupby("Contrato")["MonthlyCharges"].sum()
+                for contract_name, total in lost_by_contract.items():
+                    figure.add_annotation(x=total, y=contract_name, text=f"<b>${total:,.0f}</b>", showarrow=False,
+                                          xanchor="left", xshift=6, font={"size": 13, "color": "#2d2d2d"})
+                figure.update_layout(xaxis_title="Ingreso mensual perdido (USD)", yaxis_title="", legend_title="Internet",
+                                     xaxis_tickprefix="$", uniformtext_minsize=11, uniformtext_mode="hide",
+                                     xaxis_range=[0, lost_by_contract.max() * 1.22])
+                st.plotly_chart(figure, width="stretch", theme=None)
+
+        chart_columns = st.columns(2)
+        with chart_columns[0]:
+            # Churn with vs without each add-on (customers with internet only): basis of the "free trial" actions
+            internet_customers = segment_data[segment_data["InternetService"] != "No"]
+            add_on_rates = [(PLAIN_LANGUAGE_LABELS[add_on],
+                             internet_customers.loc[internet_customers[add_on] == "Yes", "churned"].mean(),
+                             internet_customers.loc[internet_customers[add_on] == "No", "churned"].mean())
+                            for add_on in ["TechSupport", "OnlineSecurity", "OnlineBackup", "DeviceProtection"]]
+            add_on_rates = [row for row in add_on_rates if not (np.isnan(row[1]) or np.isnan(row[2]))]
+            if not add_on_rates:
+                st.info("Este grupo no tiene clientes con internet para comparar servicios adicionales.")
+            else:
+                add_on_names, with_rates, without_rates = zip(*add_on_rates)
+                figure = go.Figure()
+                for name, with_rate, without_rate in add_on_rates:
+                    figure.add_trace(go.Scatter(x=[with_rate, without_rate], y=[name, name], mode="lines",
+                                                line={"color": "#dfe3e8", "width": 6}, showlegend=False, hoverinfo="skip"))
+                figure.add_trace(go.Scatter(x=with_rates, y=add_on_names, mode="markers+text", name="Con el servicio",
+                                            marker={"color": "#6b7280", "size": 16}, text=[f"{rate:.0%}" for rate in with_rates],
+                                            textposition="bottom center", hovertemplate="Con el servicio: %{x:.1%}<extra></extra>"))
+                figure.add_trace(go.Scatter(x=without_rates, y=add_on_names, mode="markers+text", name="Sin el servicio",
+                                            marker={"color": HIGHLIGHT_COLOR, "size": 16},
+                                            text=[f"{rate:.0%}" for rate in without_rates], textposition="bottom center",
+                                            hovertemplate="Sin el servicio: %{x:.1%}<extra></extra>"))
+                figure.update_layout(title="Abandono con y sin cada servicio adicional (clientes con internet)",
+                                     xaxis_title="Tasa de abandono", xaxis_tickformat=".0%", yaxis_title="",
+                                     xaxis_rangemode="tozero")
+                st.plotly_chart(figure, width="stretch", theme=None)
+        with chart_columns[1]:
+            figure = px.box(segment_data, x="Churn", y="MonthlyCharges", color="Churn",
+                            color_discrete_map={"Yes": HIGHLIGHT_COLOR, "No": NEUTRAL_COLOR},
+                            labels={"MonthlyCharges": "Cuota mensual", "Churn": "¿Se fue?"},
+                            title="Cuota mensual de quienes se quedan vs. quienes se van")
+            figure.update_xaxes(tickvals=list(stay_leave_names), ticktext=list(stay_leave_names.values()), title="")
+            figure.update_layout(yaxis_title="Cuota mensual (USD)", showlegend=False)
+            st.plotly_chart(figure, width="stretch", theme=None)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # B. Model Performance
@@ -458,16 +550,28 @@ with performance_tab:
         cross_validation_value = metadata["cross_validation_metrics"][metric_name]
         metric_label, metric_help = metric_display[metric_name]
         column.metric(metric_label, f"{test_value:.3f}",
-                      delta=f"{test_value - cross_validation_value:+.3f} vs. validación cruzada", help=metric_help)
+                      delta=f"{test_value - cross_validation_value:+.3f} vs. validación cruzada", help=metric_help,
+                      delta_color="off")  # grey: a small test-vs-CV gap is expected, not an alarm
 
     chart_columns = st.columns(2)
     with chart_columns[0]:
-        confusion_matrix = app_results["test_confusion_matrix"].to_numpy()
-        figure = px.imshow(confusion_matrix, text_auto=True, color_continuous_scale=["#ffffff", NEUTRAL_COLOR],
-                           x=["Predijo: se queda", "Predijo: se va"], y=["En realidad: se quedó", "En realidad: se fue"],
-                           title="Aciertos y errores en 1,409 clientes nuevos")
-        figure.update_layout(coloraxis_showscale=False)
-        figure.update_traces(textfont_size=20)
+        confusion_matrix = app_results["test_confusion_matrix"].to_numpy()  # rows: actual (stays, churns); cols: predicted
+        # Color by meaning, not by count: correct = grey, false alarm = light red, missed churner (costliest) = red
+        cell_kinds = [["Acierto", "Falsa alarma"], ["No detectado", "Detectado"]]
+        cell_color_codes = [[0, 1], [2, 0]]
+        predicted_labels, actual_labels = ["Predijo: se queda", "Predijo: se va"], ["Se quedó", "Se fue"]
+        figure = go.Figure(go.Heatmap(z=cell_color_codes, x=predicted_labels, y=actual_labels, zmin=0, zmax=2,
+                                      colorscale=[[0, "#eef0f3"], [0.5, "#f9d4d4"], [1, HIGHLIGHT_COLOR]],
+                                      showscale=False, xgap=6, ygap=6, hoverinfo="skip"))
+        for row in range(2):
+            for column in range(2):
+                figure.add_annotation(x=predicted_labels[column], y=actual_labels[row], showarrow=False,
+                                      text=f"<b>{confusion_matrix[row, column]:,}</b><br>{cell_kinds[row][column]}",
+                                      font={"size": 18, "color": "#ffffff" if cell_color_codes[row][column] == 2 else "#2d2d2d"})
+        figure.update_layout(title=f"{confusion_matrix[1, 0]:,} de {confusion_matrix[1].sum():,} clientes que se iban "
+                                   "pasaron sin detectar",
+                             yaxis={"autorange": "reversed", "title": "En realidad", "showgrid": False},
+                             xaxis={"side": "bottom", "showgrid": False})
         st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         model_comparison = app_results["model_comparison_cv"]
@@ -482,23 +586,50 @@ with performance_tab:
         figure.update_layout(yaxis_range=[0, 1], xaxis_title="", yaxis_title="Puntaje (validación cruzada)", legend_title="")
         st.plotly_chart(figure, width="stretch", theme=None)
 
+    st.markdown("#### ¿Podemos creerle al porcentaje?")
+    test_scores = app_results["test_predictions"]
+    chart_columns = st.columns(2)
+    with chart_columns[0]:
+        # Calibration: mean predicted probability vs actual churn rate, by probability band (test customers)
+        calibration = (test_scores.assign(band=pd.cut(test_scores["churn_probability"],
+                                                      bins=[0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0], include_lowest=True))
+                       .groupby("band", observed=True)
+                       .agg(predicted=("churn_probability", "mean"), actual=("actual_churn", "mean"),
+                            customers=("actual_churn", "size")).reset_index())
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line={"color": NEUTRAL_COLOR, "dash": "dash"},
+                                    name="Calibración perfecta", hoverinfo="skip"))
+        figure.add_trace(go.Scatter(x=calibration["predicted"], y=calibration["actual"], mode="lines+markers",
+                                    line={"color": HIGHLIGHT_COLOR, "width": 3},
+                                    marker={"color": HIGHLIGHT_COLOR, "size": np.sqrt(calibration["customers"]) * 1.6,
+                                            "line": {"color": "#ffffff", "width": 1.5}},
+                                    customdata=calibration["customers"], name="Menolyte Core",
+                                    hovertemplate="El modelo dijo %{x:.0%}<br>Se fueron %{y:.0%}<br>Clientes: %{customdata:,}"
+                                                  "<extra></extra>"))
+        figure.update_layout(title="Cuando el modelo dice 70%, se van unos 7 de cada 10",
+                             xaxis_title="Probabilidad que dijo el modelo", yaxis_title="Clientes que se fueron de verdad",
+                             xaxis_tickformat=".0%", yaxis_tickformat=".0%", xaxis_range=[0, 1], yaxis_range=[0, 1])
+        st.plotly_chart(figure, width="stretch", theme=None)
+    with chart_columns[1]:
+        # Separation: distribution of predicted probabilities for customers who stayed vs left
+        figure = px.histogram(test_scores.assign(outcome=test_scores["actual_churn"].map({0: "Se quedó", 1: "Se fue"})),
+                              x="churn_probability", color="outcome", barmode="overlay", histnorm="percent", nbins=20,
+                              color_discrete_map={"Se quedó": NEUTRAL_COLOR, "Se fue": HIGHLIGHT_COLOR},
+                              category_orders={"outcome": ["Se quedó", "Se fue"]},
+                              labels={"churn_probability": "probabilidad", "outcome": "resultado"},
+                              title="El modelo separa a quienes se quedan de quienes se van")
+        for edge in risk_segment_edges[1:-1]:
+            figure.add_vline(x=edge, line_dash="dot", line_color="#2d2d2d")
+        figure.update_layout(xaxis_title="Probabilidad de abandono predicha", yaxis_title="% del grupo",
+                             xaxis_tickformat=".0%", legend_title="")
+        st.plotly_chart(figure, width="stretch", theme=None)
+    st.caption(f"Ambos gráficos usan los {len(test_scores):,} clientes de prueba. Izquierda: cada punto agrupa clientes con "
+               "probabilidad parecida (tamaño = cantidad); cerca de la diagonal = el porcentaje es confiable. Derecha: "
+               f"líneas punteadas = límites de los segmentos de riesgo ({risk_segment_edges[1]:.0%} y {risk_segment_edges[2]:.0%}).")
+
     st.markdown("#### ¿Cuántos datos hay que pedir por cliente?")
-    curve = form_size_curve()
-    chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
-    figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
-                     color_discrete_map={"F2": "#2d2d2d", "ROC-AUC": NEUTRAL_COLOR},
-                     labels={"fields asked": "datos pedidos", "value": "puntaje", "variable": "métrica"},
-                     title=f"Con {len(FORM_FIELDS)} datos el modelo rinde casi igual que con los 19")
-    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR,
-                     annotation_text="Formulario de la app", annotation_position="bottom right")
-    figure.update_layout(xaxis_title="Datos pedidos (los más importantes primero)", yaxis_title="Puntaje en prueba",
-                         legend_title="", xaxis_dtick=1)
-    st.plotly_chart(figure, width="stretch", theme=None)
-    st.caption(f"Orden: {', '.join(PLAIN_LANGUAGE_LABELS[variable].lower() for variable in FIELD_RANKING)}. Los datos no pedidos toman el valor típico del entrenamiento; el total "
-               f"pagado se calcula como meses × cuota mensual. El formulario de la app pide {len(FORM_FIELDS)} datos "
-               f"(línea punteada): F2 {chosen_form['F2']:.3f} vs. {metadata['test_metrics']['f2']:.3f} con los 19, ROC-AUC "
-               f"{chosen_form['ROC-AUC']:.3f} vs. {metadata['test_metrics']['roc_auc']:.3f}, y la misma decisión para el "
-               f"{chosen_form['same decision as all fields']:.1%} de los clientes de prueba. El modelo no se reentrena.")
+    # Slot reserved here, filled at the END of the script: the slow first computation no longer blocks the other tabs
+    form_curve_slot = st.container()
 
     with st.expander("🔧 Detalles técnicos: optimización e importancia de variables"):
         st.caption(f"Modelo final: SVM (kernel RBF) ajustado con Grid Search. C = {hyperparameters['C']:.3f}, "
@@ -560,6 +691,37 @@ with performance_tab:
         figure.update_layout(xaxis_title="Importancia normalizada", yaxis_title="", legend_title="")
         st.plotly_chart(figure, width="stretch", theme=None)
 
+        st.markdown("#### Grid Search: F2 en validación cruzada para cada combinación de C y gamma")
+        f2_grid = app_results["grid_search_f2_matrix"]  # rows: gamma, columns: C (exported by the notebook)
+        figure = go.Figure(go.Heatmap(
+            z=f2_grid.to_numpy(), x=[str(value) for value in f2_grid.columns], y=[str(value) for value in f2_grid.index],
+            # Color range starts at 0.68: failed configs (F2 = 0) would otherwise flatten all the good cells into one red
+            zmin=0.68, zmax=float(np.nanmax(f2_grid.to_numpy())),
+            colorscale=[[0, "#ffffff"], [0.4, "#fbe3e3"], [0.75, "#f19c9c"], [1, "#e05a5b"]], texttemplate="%{z:.4f}",
+            textfont={"size": 13, "color": "#2d2d2d"}, xgap=3, ygap=3, showscale=False,
+            hovertemplate="C = %{x}<br>gamma = %{y}<br>F2 = %{z:.4f}<extra></extra>"))
+        best_gamma, best_c = np.unravel_index(np.nanargmax(f2_grid.to_numpy()), f2_grid.shape)
+        figure.add_shape(type="rect", x0=best_c - 0.5, x1=best_c + 0.5, y0=best_gamma - 0.5, y1=best_gamma + 0.5,
+                         line={"color": "#2d2d2d", "width": 3})
+        figure.update_layout(title="La combinación elegida (recuadro) tiene el mejor F2 de la cuadrícula", height=430,
+                             xaxis={"title": "C (regularización)", "type": "category", "showgrid": False},
+                             yaxis={"title": "gamma (alcance del kernel)", "type": "category", "showgrid": False})
+        st.plotly_chart(figure, width="stretch", theme=None)
+
+        st.markdown("#### Impacto de negocio de cada modelo (validación cruzada, hiperparámetros por defecto)")
+        business_impact = app_results["business_impact_cv"].rename(columns={
+            "churners_detected (TP)": "clientes que se van detectados", "churners_missed (FN)": "no detectados",
+            "unnecessary_contacts (FP)": "contactos innecesarios", "monthly_revenue_reachable_TP ($)": "ingreso mensual alcanzable",
+            "monthly_revenue_lost_FN ($)": "ingreso mensual no detectado", "total_contacts": "contactos totales",
+            "contacts_per_churner_found": "contactos por cliente encontrado",
+            "hypothetical_cost_of_wasted_contacts ($)": "costo hipotético de contactos innecesarios"})
+        money_rows = ["ingreso mensual alcanzable", "ingreso mensual no detectado", "costo hipotético de contactos innecesarios"]
+        impact_display = business_impact.T.apply(  # models as columns: fits the page and compares side by side
+            lambda row: row.map((lambda value: f"${value:,.0f}") if row.name in money_rows
+                                else (lambda value: f"{value:.2f}") if row.name == "contactos por cliente encontrado"
+                                else (lambda value: f"{value:,.0f}")), axis=1)
+        st.dataframe(impact_display, width="stretch")
+
 # ----------------------------------------------------------------------------------------------------------------------
 # C. Prediction & Explainability
 # ----------------------------------------------------------------------------------------------------------------------
@@ -615,11 +777,18 @@ with prediction_tab:
         predicted_churn = final_pipeline.predict(customer_row)[0]
         risk_segment = risk_segment_of(churn_probability)
 
-        result_columns = st.columns(3)
-        result_columns[0].metric("Probabilidad de abandono", f"{churn_probability:.0%}")
-        result_columns[1].metric("Segmento de riesgo", risk_segment)
-        result_columns[2].metric("Decisión del modelo", "Probablemente se va" if predicted_churn == 1 else "Probablemente se queda")
-        st.progress(float(churn_probability))
+        # Result card: risk scale + segment badge + decision in plain words (same values as before, new presentation)
+        risk_level = RISK_SEGMENT_NAMES.index(risk_segment)
+        with st.container(border=True, key=f"prediction_card_{risk_level}"):
+            scale_column, summary_column = st.columns([1.15, 1], gap="large")
+            scale_column.markdown(risk_scale(churn_probability, risk_segment_edges,
+                                             [name.replace("Riesgo ", "").capitalize() for name in RISK_SEGMENT_NAMES],
+                                             risk_level), unsafe_allow_html=True)
+            summary_column.markdown(
+                f'<div class="mn-result-label">Segmento de riesgo</div>{risk_badge(risk_segment, risk_level)}'
+                f'<div class="mn-result-label">Decisión del modelo</div>'
+                f'<div class="mn-result-decision">{"Probablemente se va" if predicted_churn == 1 else "Probablemente se queda"}</div>'
+                f'<div class="mn-result-plain">{plain_probability_sentence(churn_probability)}</div>', unsafe_allow_html=True)
 
         with st.spinner("Explicando la predicción con SHAP y LIME..."):
             shap_by_variable, lime_conditions = explain_customer(input_values)
@@ -665,8 +834,22 @@ with prediction_tab:
         actions = [action for action in (suggested_action(variable, input_values[variable]) for variable in risk_raising_drivers) if action]
         if actions and churn_probability >= risk_segment_edges[1]:
             st.markdown("#### Acciones de retención sugeridas")
-            for action in dict.fromkeys(actions):
-                st.markdown(f"- {action}")
+            # Same actions, same order (drivers ranked by SHAP); top 3 as cards with their reason, the rest folded
+            action_reasons = {}
+            for variable in risk_raising_drivers:
+                action = suggested_action(variable, input_values[variable])
+                if action and action not in action_reasons:
+                    action_reasons[action] = (f"Porque: {PLAIN_LANGUAGE_LABELS[variable].lower()} "
+                                              f"({describe_value(variable, input_values[variable])})")
+            prioritized_actions = list(action_reasons.items())
+            action_columns = st.columns(3, gap="medium")
+            for number, (action_column, (action, reason)) in enumerate(zip(action_columns, prioritized_actions[:3]), start=1):
+                action_column.markdown(action_card(number, action, reason), unsafe_allow_html=True)
+            if len(prioritized_actions) > 3:
+                with st.expander(f"Ver {len(prioritized_actions) - 3} acciones más"):
+                    for number, (action, reason) in enumerate(prioritized_actions[3:], start=4):
+                        st.markdown(f"**{number}.** {action}  \n<span style='color:#6b7280'>{reason}</span>",
+                                    unsafe_allow_html=True)
         st.caption("Las explicaciones muestran lo que el modelo asocia con el abandono, no causas comprobadas. "
                    "Las acciones sugeridas son hipótesis a validar con una prueba controlada (contactados vs. grupo de control).")
 
@@ -714,7 +897,7 @@ with business_tab:
                                     name="Elegir al azar"))
         figure.add_vline(x=contact_share, line_dash="dot")
         figure.update_layout(title="Clientes que se van alcanzados vs. clientes contactados", xaxis_tickformat=".0%",
-                             yaxis_tickformat=".0%", xaxis_title="Clientes contactados", yaxis_title="Clientes que se van alcanzados")
+                             yaxis_tickformat=".0%", xaxis_title="Clientes contactados", yaxis_title="De los que se van, alcanzados")
         st.plotly_chart(figure, width="stretch", theme=None)
     with chart_columns[1]:
         segment_summary = (ranked_customers.groupby("risk_segment")
@@ -722,12 +905,41 @@ with business_tab:
                                 monthly_revenue=("MonthlyCharges", "sum"))
                            .reindex(RISK_SEGMENT_NAMES).reset_index())
         figure = px.bar(segment_summary, x="risk_segment", y="actual_churn_rate", text_auto=".0%", color="risk_segment",
-                        color_discrete_map=dict(zip(RISK_SEGMENT_NAMES, [NEUTRAL_COLOR, "#f2a65a", HIGHLIGHT_COLOR])),
+                        color_discrete_map=dict(zip(RISK_SEGMENT_NAMES, [NEUTRAL_COLOR, "#f19c9c", HIGHLIGHT_COLOR])),
                         hover_data=["customers", "monthly_revenue"], title="Abandono real por segmento de riesgo",
                         labels={"risk_segment": "segmento", "actual_churn_rate": "abandono real", "customers": "clientes",
                                 "monthly_revenue": "ingreso mensual"})
-        figure.update_layout(yaxis_tickformat=".0%", showlegend=False, xaxis_title="", yaxis_title="Clientes que efectivamente se fueron")
+        figure.update_layout(yaxis_tickformat=".0%", showlegend=False, xaxis_title="", yaxis_title="Se fueron")
         st.plotly_chart(figure, width="stretch", theme=None)
+
+    st.markdown("#### ¿Cuánto gana la campaña?")
+    # Exported by the notebook (B4): cumulative net benefit when contacting the riskiest customers first
+    assumptions = metadata["hypothetical_assumptions"]
+    best_campaign = ranked_customers.loc[ranked_customers["cumulative_net_benefit"].idxmax()]
+    chosen_campaign_benefit = contacted_customers["cumulative_net_benefit"].iloc[-1]
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(x=ranked_customers["share_of_customers_contacted"], y=ranked_customers["cumulative_net_benefit"],
+                                mode="lines", line={"color": HIGHLIGHT_COLOR, "width": 3}, name="Beneficio neto",
+                                hovertemplate="Contactando al %{x:.0%}: $%{y:,.0f} al año<extra></extra>"))
+    figure.add_trace(go.Scatter(x=[best_campaign["share_of_customers_contacted"]], y=[best_campaign["cumulative_net_benefit"]],
+                                mode="markers", marker={"symbol": "star", "size": 18, "color": "#2d2d2d"},
+                                name=f"Máximo: ${best_campaign['cumulative_net_benefit']:,.0f} "
+                                     f"(al {best_campaign['share_of_customers_contacted']:.0%})",
+                                hovertemplate="Máximo: $%{y:,.0f} al %{x:.0%}<extra></extra>"))
+    figure.add_trace(go.Scatter(x=[contact_share], y=[chosen_campaign_benefit], mode="markers",
+                                marker={"size": 14, "color": HIGHLIGHT_COLOR, "line": {"color": "#ffffff", "width": 2}},
+                                name=f"Tu selección: ${chosen_campaign_benefit:,.0f} (al {contact_share:.0%})",
+                                hovertemplate="Tu selección: $%{y:,.0f}<extra></extra>"))
+    figure.add_vline(x=contact_share, line_dash="dot")
+    figure.update_layout(title=f"Contactando al {contact_share:.0%} más riesgoso se ganan ~${chosen_campaign_benefit:,.0f} "
+                               f"al año ({chosen_campaign_benefit / best_campaign['cumulative_net_benefit']:.0%} del máximo)",
+                         xaxis_title="Clientes contactados (los más riesgosos primero)", yaxis_title="Beneficio neto anual (USD)",
+                         xaxis_tickformat=".0%", yaxis_tickprefix="$", height=420)
+    st.plotly_chart(figure, width="stretch", theme=None)
+    st.caption(f"⚠️ Estimación ilustrativa con supuestos hipotéticos del notebook: costo de ${assumptions['cost_per_contact']} "
+               f"por contacto; el {assumptions['retention_success_rate']:.0%} de los clientes contactados que iban a irse se "
+               f"quedan; se recuperan {assumptions['retained_months_of_revenue']} meses de su cuota. Medido en los "
+               f"{len(ranked_customers):,} clientes de prueba. Cambia el porcentaje con el control de arriba.")
 
     st.markdown("#### Lista de prioridad para el equipo de retención")
     priority_list = (contacted_customers.merge(customer_data[["customerID"]], left_on="customer_index", right_index=True)
@@ -756,3 +968,25 @@ with business_tab:
                             "ofertas personalizadas y registra el resultado.")
     st.caption("Humano en el circuito: el gerente aprueba cada campaña. Los clientes se contactan solo con consentimiento "
                "previo, conforme a la Ley Orgánica de Protección de Datos Personales del Ecuador (LOPDP).")
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Deferred: form-size curve of the Model Performance tab (slowest computation, cached after the first run).
+# Drawn last so the Prediction and Business tabs appear immediately; it lands in the slot reserved in that tab.
+# ----------------------------------------------------------------------------------------------------------------------
+with form_curve_slot:
+    curve = form_size_curve()
+    chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
+    figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
+                     color_discrete_map={"F2": "#2d2d2d", "ROC-AUC": NEUTRAL_COLOR},
+                     labels={"fields asked": "datos pedidos", "value": "puntaje", "variable": "métrica"},
+                     title=f"Con {len(FORM_FIELDS)} datos el modelo rinde casi igual que con los 19")
+    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR,
+                     annotation_text="Formulario de la app", annotation_position="bottom right")
+    figure.update_layout(xaxis_title="Datos pedidos (los más importantes primero)", yaxis_title="Puntaje en prueba",
+                         legend_title="", xaxis_dtick=1)
+    st.plotly_chart(figure, width="stretch", theme=None)
+    st.caption(f"Orden: {', '.join(PLAIN_LANGUAGE_LABELS[variable].lower() for variable in FIELD_RANKING)}. Los datos no pedidos toman el valor típico del entrenamiento; el total "
+               f"pagado se calcula como meses × cuota mensual. El formulario de la app pide {len(FORM_FIELDS)} datos "
+               f"(línea punteada): F2 {chosen_form['F2']:.3f} vs. {metadata['test_metrics']['f2']:.3f} con los 19, ROC-AUC "
+               f"{chosen_form['ROC-AUC']:.3f} vs. {metadata['test_metrics']['roc_auc']:.3f}, y la misma decisión para el "
+               f"{chosen_form['same decision as all fields']:.1%} de los clientes de prueba. El modelo no se reentrena.")
