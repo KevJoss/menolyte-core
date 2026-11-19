@@ -117,6 +117,35 @@ span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
 .mn-step-text {{ font-size: 0.95rem; color: {MID_GREY}; }}
 .mn-section-title {{ font-size: 1.35rem; font-weight: 700; color: {TEXT_DARK}; margin: 2.5rem 0 1rem 0; }}
 
+/* ---------- Prediction result card: top border colored by risk segment (st.container key = prediction_card_<0|1|2>) ---------- */
+[class*="st-key-prediction_card_"] {{
+    border-radius: 0.9rem !important; padding: 0.75rem 1.25rem !important; background: #ffffff;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.07);
+}}
+.st-key-prediction_card_0 {{ border-top: 6px solid {NEUTRAL_GREY} !important; }}
+.st-key-prediction_card_1 {{ border-top: 6px solid #f19c9c !important; }}
+.st-key-prediction_card_2 {{ border-top: 6px solid {BRAND_RED} !important; }}
+[class*="st-key-prediction_card_"] [data-testid="stPlotlyChart"] {{ border: none; padding: 0; }}
+.mn-badge {{ display: inline-block; padding: 0.3rem 0.9rem; border-radius: 999px; font-weight: 700; font-size: 1rem; }}
+.mn-badge-0 {{ background: #eef0f3; color: {TEXT_DARK}; }}
+.mn-badge-1 {{ background: #fbe3e3; color: #8c1c1d; }}
+.mn-badge-2 {{ background: {BRAND_RED}; color: #ffffff; }}
+.mn-result-label {{ font-size: 0.85rem; font-weight: 600; color: {MID_GREY}; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 1.4rem; }}
+.mn-result-decision {{ font-size: 2rem; font-weight: 800; color: {TEXT_DARK}; letter-spacing: -0.02em; margin-top: 0.2rem; }}
+.mn-result-plain {{ font-size: 1.05rem; color: {MID_GREY}; margin-top: 0.4rem; }}
+
+/* ---------- Retention actions: numbered priority cards ---------- */
+.mn-action {{
+    display: flex; gap: 0.9rem; align-items: flex-start; background: #ffffff; border: 1px solid {BORDER};
+    border-radius: 0.8rem; padding: 1rem 1.1rem; height: 100%;
+}}
+.mn-action-number {{
+    flex: 0 0 2rem; height: 2rem; border-radius: 50%; background: {BRAND_RED}; color: #ffffff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700;
+}}
+.mn-action-text {{ font-weight: 600; color: {TEXT_DARK}; line-height: 1.35; }}
+.mn-action-reason {{ font-size: 0.88rem; color: {MID_GREY}; margin-top: 0.35rem; }}
+
 /* ---------- Charts sit on white cards like the KPIs ---------- */
 [data-testid="stPlotlyChart"] {{
     border: 1px solid {BORDER}; border-radius: 0.75rem; padding: 0.5rem; background: #ffffff;
@@ -150,6 +179,34 @@ def figure_card(value, title, detail):
 def step_card(number, title, tab_name, text):
     return (f'<div class="mn-step"><div class="mn-step-number">{number}</div><div class="mn-step-title">{title}</div>'
             f'<div class="mn-step-tab">→ {tab_name}</div><div class="mn-step-text">{text}</div></div>')
+
+
+def risk_badge(text, level):
+    """Pill with the risk segment; level 0 = low (grey), 1 = medium (light red), 2 = high (red)."""
+    return f'<span class="mn-badge mn-badge-{level}">{text}</span>'
+
+
+def action_card(number, action, reason):
+    return (f'<div class="mn-action"><div class="mn-action-number">{number}</div><div>'
+            f'<div class="mn-action-text">{action}</div><div class="mn-action-reason">{reason}</div></div></div>')
+
+
+def risk_gauge(probability, segment_edges, level):
+    """Gauge 0–100% with the risk segments as background bands; the bar takes the segment color."""
+    bar_color = [NEUTRAL_GREY, "#f19c9c", BRAND_RED][level]
+    edges = [edge * 100 for edge in segment_edges]
+    figure = go.Figure(go.Indicator(
+        mode="gauge+number", value=probability * 100,
+        number={"suffix": "%", "font": {"size": 56, "color": TEXT_DARK}, "valueformat": ".0f"},
+        title={"text": "Probabilidad de abandono", "font": {"size": 15, "color": MID_GREY}},
+        gauge={"axis": {"range": [0, 100], "tickvals": edges, "ticktext": [f"{edge:.0f}%" for edge in edges],
+                        "tickfont": {"size": 12, "color": MID_GREY}},
+               "bar": {"color": bar_color, "thickness": 0.35}, "bgcolor": "#ffffff", "borderwidth": 0,
+               "steps": [{"range": [edges[0], edges[1]], "color": "#f3f4f6"},
+                         {"range": [edges[1], edges[2]], "color": "#fdf0f0"},
+                         {"range": [edges[2], edges[3]], "color": "#fbe3e3"}]}))
+    figure.update_layout(height=250, margin=dict(t=50, b=10, l=30, r=30))
+    return figure
 
 
 def register_plotly_template():

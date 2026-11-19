@@ -19,7 +19,8 @@ from lime.lime_tabular import LimeTabularExplainer
 from sklearn.metrics import fbeta_score, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find styles.py also when run from tests (AppTest)
-from styles import apply_global_styles, brand_header, figure_card, html, register_plotly_template, step_card
+from styles import (action_card, apply_global_styles, brand_header, figure_card, html, register_plotly_template,
+                    risk_badge, risk_gauge, step_card)
 
 warnings.filterwarnings("ignore")
 
@@ -155,6 +156,17 @@ def describe_lime_condition(condition):
         return f"{PLAIN_LANGUAGE_LABELS.get(variable, variable)}: {display_value(value)}"
     variable_pattern = r"\b(" + "|".join(sorted(PLAIN_LANGUAGE_LABELS, key=len, reverse=True)) + r")\b"
     return re.sub(variable_pattern, lambda match: PLAIN_LANGUAGE_LABELS[match.group(1)], condition)
+
+
+def plain_probability_sentence(probability):
+    """Churn probability as natural frequency ('7 of 10'); switches to 'of 100' for low risks to avoid '0 of 10'."""
+    out_of_ten, out_of_hundred = round(probability * 10), round(probability * 100)
+    if out_of_ten >= 1:
+        return f"Según el modelo, de cada 10 clientes con este perfil, unos <b>{out_of_ten}</b> se irían."
+    if out_of_hundred >= 1:
+        return (f"Según el modelo, de cada 100 clientes con este perfil, solo <b>{out_of_hundred}</b> "
+                f"se {'iría' if out_of_hundred == 1 else 'irían'}.")
+    return "Según el modelo, casi ningún cliente con este perfil se iría."
 
 
 def describe_value(variable, value):
@@ -498,22 +510,8 @@ with performance_tab:
         st.plotly_chart(figure, width="stretch", theme=None)
 
     st.markdown("#### ¿Cuántos datos hay que pedir por cliente?")
-    curve = form_size_curve()
-    chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
-    figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
-                     color_discrete_map={"F2": "#2d2d2d", "ROC-AUC": NEUTRAL_COLOR},
-                     labels={"fields asked": "datos pedidos", "value": "puntaje", "variable": "métrica"},
-                     title=f"Con {len(FORM_FIELDS)} datos el modelo rinde casi igual que con los 19")
-    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR,
-                     annotation_text="Formulario de la app", annotation_position="bottom right")
-    figure.update_layout(xaxis_title="Datos pedidos (los más importantes primero)", yaxis_title="Puntaje en prueba",
-                         legend_title="", xaxis_dtick=1)
-    st.plotly_chart(figure, width="stretch", theme=None)
-    st.caption(f"Orden: {', '.join(PLAIN_LANGUAGE_LABELS[variable].lower() for variable in FIELD_RANKING)}. Los datos no pedidos toman el valor típico del entrenamiento; el total "
-               f"pagado se calcula como meses × cuota mensual. El formulario de la app pide {len(FORM_FIELDS)} datos "
-               f"(línea punteada): F2 {chosen_form['F2']:.3f} vs. {metadata['test_metrics']['f2']:.3f} con los 19, ROC-AUC "
-               f"{chosen_form['ROC-AUC']:.3f} vs. {metadata['test_metrics']['roc_auc']:.3f}, y la misma decisión para el "
-               f"{chosen_form['same decision as all fields']:.1%} de los clientes de prueba. El modelo no se reentrena.")
+    # Slot reserved here, filled at the END of the script: the slow first computation no longer blocks the other tabs
+    form_curve_slot = st.container()
 
     with st.expander("🔧 Detalles técnicos: optimización e importancia de variables"):
         st.caption(f"Modelo final: SVM (kernel RBF) ajustado con Grid Search. C = {hyperparameters['C']:.3f}, "
@@ -630,11 +628,17 @@ with prediction_tab:
         predicted_churn = final_pipeline.predict(customer_row)[0]
         risk_segment = risk_segment_of(churn_probability)
 
-        result_columns = st.columns(3)
-        result_columns[0].metric("Probabilidad de abandono", f"{churn_probability:.0%}")
-        result_columns[1].metric("Segmento de riesgo", risk_segment)
-        result_columns[2].metric("Decisión del modelo", "Probablemente se va" if predicted_churn == 1 else "Probablemente se queda")
-        st.progress(float(churn_probability))
+        # Result card: gauge + segment badge + decision in plain words (same values as before, new presentation)
+        risk_level = RISK_SEGMENT_NAMES.index(risk_segment)
+        with st.container(border=True, key=f"prediction_card_{risk_level}"):
+            gauge_column, summary_column = st.columns([1.1, 1], gap="large")
+            gauge_column.plotly_chart(risk_gauge(churn_probability, risk_segment_edges, risk_level),
+                                      width="stretch", theme=None, config={"displayModeBar": False})
+            summary_column.markdown(
+                f'<div class="mn-result-label">Segmento de riesgo</div>{risk_badge(risk_segment, risk_level)}'
+                f'<div class="mn-result-label">Decisión del modelo</div>'
+                f'<div class="mn-result-decision">{"Probablemente se va" if predicted_churn == 1 else "Probablemente se queda"}</div>'
+                f'<div class="mn-result-plain">{plain_probability_sentence(churn_probability)}</div>', unsafe_allow_html=True)
 
         with st.spinner("Explicando la predicción con SHAP y LIME..."):
             shap_by_variable, lime_conditions = explain_customer(input_values)
@@ -680,8 +684,22 @@ with prediction_tab:
         actions = [action for action in (suggested_action(variable, input_values[variable]) for variable in risk_raising_drivers) if action]
         if actions and churn_probability >= risk_segment_edges[1]:
             st.markdown("#### Acciones de retención sugeridas")
-            for action in dict.fromkeys(actions):
-                st.markdown(f"- {action}")
+            # Same actions, same order (drivers ranked by SHAP); top 3 as cards with their reason, the rest folded
+            action_reasons = {}
+            for variable in risk_raising_drivers:
+                action = suggested_action(variable, input_values[variable])
+                if action and action not in action_reasons:
+                    action_reasons[action] = (f"Porque: {PLAIN_LANGUAGE_LABELS[variable].lower()} "
+                                              f"({describe_value(variable, input_values[variable])})")
+            prioritized_actions = list(action_reasons.items())
+            action_columns = st.columns(3, gap="medium")
+            for number, (action_column, (action, reason)) in enumerate(zip(action_columns, prioritized_actions[:3]), start=1):
+                action_column.markdown(action_card(number, action, reason), unsafe_allow_html=True)
+            if len(prioritized_actions) > 3:
+                with st.expander(f"Ver {len(prioritized_actions) - 3} acciones más"):
+                    for number, (action, reason) in enumerate(prioritized_actions[3:], start=4):
+                        st.markdown(f"**{number}.** {action}  \n<span style='color:#6b7280'>{reason}</span>",
+                                    unsafe_allow_html=True)
         st.caption("Las explicaciones muestran lo que el modelo asocia con el abandono, no causas comprobadas. "
                    "Las acciones sugeridas son hipótesis a validar con una prueba controlada (contactados vs. grupo de control).")
 
@@ -771,3 +789,25 @@ with business_tab:
                             "ofertas personalizadas y registra el resultado.")
     st.caption("Humano en el circuito: el gerente aprueba cada campaña. Los clientes se contactan solo con consentimiento "
                "previo, conforme a la Ley Orgánica de Protección de Datos Personales del Ecuador (LOPDP).")
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Deferred: form-size curve of the Model Performance tab (slowest computation, cached after the first run).
+# Drawn last so the Prediction and Business tabs appear immediately; it lands in the slot reserved in that tab.
+# ----------------------------------------------------------------------------------------------------------------------
+with form_curve_slot:
+    curve = form_size_curve()
+    chosen_form = curve.iloc[len(FORM_FIELDS) - 1]
+    figure = px.line(curve, x="fields asked", y=["F2", "ROC-AUC"], markers=True,
+                     color_discrete_map={"F2": "#2d2d2d", "ROC-AUC": NEUTRAL_COLOR},
+                     labels={"fields asked": "datos pedidos", "value": "puntaje", "variable": "métrica"},
+                     title=f"Con {len(FORM_FIELDS)} datos el modelo rinde casi igual que con los 19")
+    figure.add_vline(x=len(FORM_FIELDS), line_dash="dot", line_color=HIGHLIGHT_COLOR,
+                     annotation_text="Formulario de la app", annotation_position="bottom right")
+    figure.update_layout(xaxis_title="Datos pedidos (los más importantes primero)", yaxis_title="Puntaje en prueba",
+                         legend_title="", xaxis_dtick=1)
+    st.plotly_chart(figure, width="stretch", theme=None)
+    st.caption(f"Orden: {', '.join(PLAIN_LANGUAGE_LABELS[variable].lower() for variable in FIELD_RANKING)}. Los datos no pedidos toman el valor típico del entrenamiento; el total "
+               f"pagado se calcula como meses × cuota mensual. El formulario de la app pide {len(FORM_FIELDS)} datos "
+               f"(línea punteada): F2 {chosen_form['F2']:.3f} vs. {metadata['test_metrics']['f2']:.3f} con los 19, ROC-AUC "
+               f"{chosen_form['ROC-AUC']:.3f} vs. {metadata['test_metrics']['roc_auc']:.3f}, y la misma decisión para el "
+               f"{chosen_form['same decision as all fields']:.1%} de los clientes de prueba. El modelo no se reentrena.")

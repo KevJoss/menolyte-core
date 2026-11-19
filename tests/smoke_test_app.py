@@ -2,6 +2,8 @@
 
 Run from the repository root:  python tests/smoke_test_app.py
 """
+import json
+import re
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -16,8 +18,12 @@ for example_option in start_from.options:
     start_from.set_value(example_option).run()
     next(button for button in app_test.button if button.label == "Predecir riesgo de abandono").click().run()
     assert not app_test.exception, f"Exception after predicting '{example_option}': {app_test.exception}"
-    shown_metrics = {metric.label: metric.value for metric in app_test.metric}
-    print(f"{example_option}: churn probability {shown_metrics.get('Probabilidad de abandono')} | {shown_metrics.get('Segmento de riesgo')}")
+    # Result card: probability from the gauge, segment from the badge
+    gauge = next(json.loads(chart.proto.spec) for chart in app_test.get("plotly_chart") if '"indicator"' in chart.proto.spec)
+    churn_probability = gauge["data"][0]["value"] / 100
+    segment = next(re.search(r'mn-badge-\d">([^<]+)<', block.value).group(1) for block in app_test.markdown if 'class="mn-badge ' in block.value)
+    assert 0 <= churn_probability <= 1, f"Gauge value out of range: {churn_probability}"
+    print(f"{example_option}: churn probability {churn_probability:.0%} | {segment}")
 
     # What-if panel: simulate a two-year contract (reruns only the fragment; the prediction must stay on screen)
     next(selectbox for selectbox in app_test.selectbox if selectbox.label == "Tipo de contrato (simulado)").set_value("Two year").run()
