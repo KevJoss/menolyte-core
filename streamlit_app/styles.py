@@ -23,7 +23,7 @@ BRAND_COLORWAY = [TEXT_DARK, BRAND_RED, NEUTRAL_GREY, MID_GREY, "#f19c9c", "#8c1
 GLOBAL_CSS = f"""
 <style>
 /* ---------- Page: generous whitespace, content not glued to the top ---------- */
-.block-container {{ padding-top: 2.5rem; padding-bottom: 4rem; max-width: 1400px; }}
+.block-container {{ padding-top: 1.25rem; padding-bottom: 4rem; max-width: 1400px; }}
 
 /* ---------- Hide Streamlit's developer chrome during the demo ---------- */
 /* The header only held those controls: hide it so the sticky tab bar can use the top edge */
@@ -43,7 +43,9 @@ GLOBAL_CSS = f"""
     font-size: 0.85rem; font-weight: 600; color: {MID_GREY};
     text-transform: uppercase; letter-spacing: 0.04em;
 }}
-[data-testid="stMetricValue"] {{ font-weight: 700; color: {TEXT_DARK}; line-height: 1.15; }}
+[data-testid="stMetricValue"] {{ font-weight: 700; color: {TEXT_DARK}; line-height: 1.15;
+    font-size: clamp(1.7rem, 2.5vw, 2.4rem) !important; }}  /* shrinks a little on narrow screens instead of "$61.15/…" */
+[data-testid="stMetricValue"] div {{ white-space: normal !important; overflow: visible !important; text-overflow: clip !important; }}
 [data-testid="stMetricDelta"] {{ font-weight: 500; }}
 /* Cards in the same row share the same height, even when one label wraps to two lines */
 [data-testid="stColumn"]:has([data-testid="stMetric"]) > [data-testid="stVerticalBlock"],
@@ -71,8 +73,21 @@ span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
     padding-top: 0.5rem;
     box-shadow: 0 6px 12px -10px rgba(16, 24, 40, 0.25);  /* subtle edge so it reads as "floating" over content */
 }}
-[data-testid="stTab"] {{ padding: 0.6rem 1rem; }}
-[data-testid="stTab"] p {{ font-size: 1.05rem; font-weight: 600; color: {MID_GREY}; }}
+[data-testid="stTab"] {{ padding: 0.6rem 0.8rem; }}
+[data-testid="stTab"] p {{ font-size: 1.05rem; font-weight: 600; color: {MID_GREY}; white-space: nowrap; }}
+/* All five tabs must stay visible on a 1280 / 1024 px projector: tighter tabs on narrower screens */
+@media (max-width: 1360px) {{
+    [data-testid="stTabs"] [role="tablist"] {{ gap: 0.15rem; }}
+    [data-testid="stTab"] {{ padding: 0.6rem 0.55rem; }}
+    [data-testid="stTab"] p {{ font-size: 1rem; }}
+}}
+@media (max-width: 1120px) {{
+    [data-testid="stTabs"] [role="tablist"] {{ gap: 0; }}
+    [data-testid="stTab"] {{ padding: 0.55rem 0.3rem; }}
+    [data-testid="stTab"] p {{ font-size: 0.84rem; }}
+    /* 1024 px: five KPI cards per row are narrow; smaller labels so words are not split ("DETECTAD-OS") */
+    [data-testid="stMetricLabel"] p {{ font-size: 0.74rem; letter-spacing: 0; }}
+}}
 [data-testid="stTab"][aria-selected="true"] p {{ color: {TEXT_DARK}; }}
 
 /* ---------- Section rhythm: clear breathing room before each section title ---------- */
@@ -119,7 +134,7 @@ span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
 
 /* ---------- Prediction result card: top border colored by risk segment (st.container key = prediction_card_<0|1|2>) ---------- */
 [class*="st-key-prediction_card_"] {{
-    border-radius: 0.9rem !important; padding: 0.75rem 1.25rem !important; background: #ffffff;
+    border-radius: 0.9rem !important; padding: 0.75rem 1.25rem 1.5rem 1.25rem !important; background: #ffffff;
     box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.07);
 }}
 .st-key-prediction_card_0 {{ border-top: 6px solid {NEUTRAL_GREY} !important; }}
@@ -137,8 +152,8 @@ span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
     background: {TEXT_DARK}; box-shadow: 0 0 0 3px #ffffff;
 }}
 .mn-scale-labels {{ display: flex; gap: 3px; margin-top: 0.7rem; }}
-.mn-scale-label {{ font-size: 0.9rem; color: #9aa1ad; font-weight: 600; }}
-.mn-scale-label span {{ display: block; font-size: 0.78rem; font-weight: 400; }}
+.mn-scale-label {{ font-size: 0.95rem; color: {MID_GREY}; font-weight: 600; }}
+.mn-scale-label span {{ display: block; font-size: 0.88rem; font-weight: 400; }}
 .mn-scale-label-active {{ color: {TEXT_DARK}; font-weight: 800; }}
 .mn-badge {{ display: inline-block; padding: 0.3rem 0.9rem; border-radius: 999px; font-weight: 700; font-size: 1rem; }}
 .mn-badge-0 {{ background: #eef0f3; color: {TEXT_DARK}; }}
@@ -159,6 +174,16 @@ span[data-baseweb="tag"] {{ background-color: {TEXT_DARK} !important; }}
 }}
 .mn-action-text {{ font-weight: 600; color: {TEXT_DARK}; line-height: 1.35; }}
 .mn-action-reason {{ font-size: 0.88rem; color: {MID_GREY}; margin-top: 0.35rem; }}
+
+/* ---------- Projector legibility: captions and info boxes ---------- */
+/* Default captions are a pale grey that washes out on a projector: use the darker brand grey */
+[data-testid="stCaptionContainer"] {{ opacity: 1 !important; }}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color: {MID_GREY} !important; }}
+/* st.info is Streamlit blue: restyle it as a neutral brand panel (grey surface, dark text, grey stripe) */
+[data-testid="stAlertContentInfo"], [data-testid="stAlertContentInfo"] p {{ color: {TEXT_DARK} !important; }}
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {{
+    background: {LIGHT_SURFACE} !important; border-left: 4px solid {NEUTRAL_GREY};
+}}
 
 /* ---------- Charts sit on white cards like the KPIs ---------- */
 [data-testid="stPlotlyChart"] {{
@@ -232,18 +257,18 @@ def risk_scale(probability, segment_edges, segment_names, level):
 def register_plotly_template():
     """Register the 'menolyte' Plotly template and make it the default for every figure."""
     axis_style = dict(showgrid=True, gridcolor=GRID, zeroline=False, linecolor=BORDER, ticks="",
-                      title_font=dict(size=14, color=MID_GREY), tickfont=dict(size=13, color=TEXT_DARK), automargin=True)
+                      title_font=dict(size=15, color=MID_GREY), tickfont=dict(size=15, color=TEXT_DARK), automargin=True)
     pio.templates["menolyte"] = go.layout.Template(layout=dict(
-        font=dict(family=FONT_FAMILY, size=14, color=TEXT_DARK),
-        title=dict(font=dict(size=18, color=TEXT_DARK), x=0, xanchor="left", y=0.97, yanchor="top"),
+        font=dict(family=FONT_FAMILY, size=15, color=TEXT_DARK),
+        title=dict(font=dict(size=19, color=TEXT_DARK), x=0, xanchor="left", y=0.97, yanchor="top"),
         paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
         colorway=BRAND_COLORWAY,
         xaxis={**axis_style, "showgrid": False},  # one grid direction is enough: less ink, same information
         yaxis=axis_style,
         # Horizontal legend above the plot: never steals width from the chart, long names are not cut
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=13), title_font=dict(size=13, color=MID_GREY),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=15), title_font=dict(size=15, color=MID_GREY),
                     orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
-        hoverlabel=dict(bgcolor="#ffffff", bordercolor=BORDER, font=dict(family=FONT_FAMILY, size=13, color=TEXT_DARK)),
+        hoverlabel=dict(bgcolor="#ffffff", bordercolor=BORDER, font=dict(family=FONT_FAMILY, size=15, color=TEXT_DARK)),
         margin=dict(t=70, l=20, r=36, b=20),  # right margin: room for the last tick label (e.g. "100%")
         bargap=0.25,
     ))

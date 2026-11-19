@@ -12,14 +12,23 @@ redColor = "#d62728"                  # Streamlit's semantic red (metric deltas,
 grayColor = "#b0b7c3"                 # brand neutral grey
 linkColor = "#d62728"
 
-# Inter: modern SaaS sans-serif, loaded from Google Fonts; falls back to the system sans-serif if offline.
-font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+# Inter: modern SaaS sans-serif, served from the app itself (streamlit_app/static) so it also loads
+# without internet on presentation day. Variable font: one 48 KB file covers weights 400–800.
+font = "Inter, sans-serif"
 headingFontWeights = [700, 700, 600, 600, 600, 600]
 baseFontSize = 17                     # default is 16: one step up so it reads well on a projector
 metricValueFontSize = "2.4rem"        # large KPI numbers
 baseRadius = "0.6rem"
 buttonRadius = "0.6rem"
 showWidgetBorder = true
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/Inter-latin.woff2"   # Inter (SIL Open Font License), latin subset
+weight = "400 800"
+
+[server]
+enableStaticServing = true            # serves streamlit_app/static/ (the Inter font file)
 
 [client]
 toolbarMode = "viewer"                # hides developer menu items (Deploy, rerun settings) during the demo
