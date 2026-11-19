@@ -600,10 +600,15 @@ with business_tab:
 
     st.markdown("#### Priority list for the retention team")
     priority_list = (contacted_customers.merge(customer_data[["customerID"]], left_on="customer_index", right_index=True)
-                     [["customerID", "churn_probability", "risk_segment", "MonthlyCharges", "tenure", "Contract"]]
-                     .rename(columns={"churn_probability": "churn risk", "MonthlyCharges": "monthly fee",
-                                      "tenure": "months as customer"}))
-    st.dataframe(priority_list.style.format({"churn risk": "{:.0%}", "monthly fee": "${:,.2f}"}),
+                     .assign(money_at_risk=lambda customers: customers["churn_probability"] * customers["MonthlyCharges"])
+                     .sort_values("money_at_risk", ascending=False)
+                     [["customerID", "money_at_risk", "churn_probability", "risk_segment", "MonthlyCharges", "tenure", "Contract"]]
+                     .rename(columns={"money_at_risk": "money at risk / month", "churn_probability": "churn risk",
+                                      "MonthlyCharges": "monthly fee", "tenure": "months as customer"}))
+    st.caption("Sorted by money at risk = churn probability × monthly fee: call first the customers whose loss costs "
+               "the most, not only the most likely to leave.")
+    st.dataframe(priority_list.style.format({"money at risk / month": "${:,.2f}", "churn risk": "{:.0%}",
+                                             "monthly fee": "${:,.2f}"}),
                  hide_index=True, width="stretch", height=300)
     st.download_button("Download priority list (CSV)", priority_list.to_csv(index=False), "menolyte_priority_list.csv", "text/csv")
 
